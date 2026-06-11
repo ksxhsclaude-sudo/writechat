@@ -346,6 +346,11 @@ async function poll() {
     annReaders = data.annReaders || null;
     serverNow = data.now || Date.now();
     if (data.me && data.me !== myKey) { myKey = data.me; localStorage.setItem("wc_key", myKey); }
+    if (data.meName && data.meName !== myName) {   // owner renamed me → reflect it everywhere
+      myName = data.meName;
+      localStorage.setItem("wc_name", myName);
+      lastListSig = "";
+    }
     $("newGroupWrap").style.display = isAdmin ? "block" : "none";
     $("myName").textContent = isAdmin ? myName + " (owner)" : myName;
     applyAvatar($("myAvatar"), myKey, myName);
@@ -424,6 +429,7 @@ async function renderChatList() {
     it.kind, it.key, it.name, it.last, it.ts,
     it.kind === "dm" ? (isOnline(presence[it.key]) ? 1 : 0) : 0,
     it.kind === "dm" && it.from === it.key && (it.ts || 0) > (lastRead[it.key] || 0) ? 1 : 0,
+    it.kind === "group" ? groupUnread(it) : 0,
   ])) + "|ann:" + (latestAnn ? latestAnn.text + latestAnn.ts : "none") + "|open:" + openChatWith;
   if (sig === lastListSig) return;
   lastListSig = sig;
@@ -438,7 +444,7 @@ async function renderChatList() {
   }
   for (const it of items) {
     if (it.kind === "group") {
-      list.appendChild(groupItem(it));
+      list.appendChild(groupItem(it, groupUnread(it)));
     } else {
       const unread = (it.from === it.key && (it.ts || 0) > (lastRead[it.key] || 0)) ? 1 : 0;
       list.appendChild(chatItem(it.key, it.name || it.key, it.last || "", it.ts, unread, false));
@@ -554,15 +560,22 @@ function renderAnnouncements(list) {
       const seers = (annReaders || []).filter(r => r.key !== myKey && r.ts >= a.ts);
       seenLine = `<div class="seenby">${seers.length ? "👁 Gesehen von: " + seers.map(s => escapeHtml(s.name)).join(", ") : "👁 Noch nicht gesehen"}</div>`;
     }
-    b.innerHTML = `${escapeHtml(a.text)}<div class="t">${fmtDateTime(a.ts)}</div>${seenLine}`;
+    b.innerHTML = `${escapeHtml(a.text)}<div class="t">${fmtDateTime(a.ts)}</div>${seenLine}${isAdmin ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    if (isAdmin) b.querySelector(".del").onclick = () => deleteAnnounce(a.ts);
     box.appendChild(b);
   }
   if (nearBottom) box.scrollTop = box.scrollHeight;
   markSeenCurrent();
 }
 
+async function deleteAnnounce(ts) {
+  if (!confirm("Diese Ankündigung löschen?")) return;
+  try { await api("deleteannounce", { token, ts }); await poll(); }
+  catch (e) { alert(e.message); }
+}
+
 /* ---- groups ---- */
-function groupItem(it) {
+function groupItem(it, unread) {
   const el = document.createElement("div");
   el.className = "chat-item" + (openChatWith === it.key ? " active" : "");
   el.innerHTML = `
@@ -570,16 +583,21 @@ function groupItem(it) {
     <div class="info">
       <div class="top"><span class="uname">${escapeHtml(it.name || "Group")}</span>
         ${it.ts ? `<span class="time">${fmtTime(it.ts)}</span>` : ""}</div>
-      <div class="top"><span class="preview">${escapeHtml(it.last || "No messages yet")}</span></div>
+      <div class="top"><span class="preview">${escapeHtml(it.last || "No messages yet")}</span>
+        ${unread ? `<span class="badge">${unread}</span>` : ""}</div>
     </div>`;
   el.onclick = () => openGroupChat(it.key, it.name);
   return el;
+}
+function groupUnread(it) {
+  return (it.from && it.from !== myKey && (it.ts || 0) > (lastRead[it.key] || 0)) ? 1 : 0;
 }
 
 function openGroupChat(id, name) {
   openChatWith = id; openChatName = name;
   $("searchInput").value = "";
   lastThreadJSON = "";
+  markRead(id);
   renderChatList();
   renderConversation();
   poll();
@@ -599,6 +617,7 @@ function openGroupInfo(groupId) {
       <div style="color:var(--muted);font-size:13px">${(groupMembers || []).length} Mitglieder</div>
       <div class="members">${memberRows}</div>
       <div class="modal-actions">
+        ${isAdmin ? `<button class="btn-create" id="grpAdd">＋ Mitglieder</button>` : ""}
         ${isAdmin ? `<button class="btn-delete" id="grpDel">Gruppe löschen</button>` : ""}
         <button class="btn-cancel" id="grpClose">Close</button>
       </div>
@@ -606,6 +625,7 @@ function openGroupInfo(groupId) {
   document.body.appendChild(overlay);
   overlay.querySelector("#grpClose").onclick = () => overlay.remove();
   if (isAdmin) {
+    overlay.querySelector("#grpAdd").onclick = () => { overlay.remove(); openAddMembers(groupId); };
     overlay.querySelector("#grpDel").onclick = async () => {
       if (!confirm(`Gruppe "${openChatName}" wirklich löschen? Das kann nicht rückgängig gemacht werden.`)) return;
       try {
@@ -618,6 +638,56 @@ function openGroupInfo(groupId) {
       } catch (e) { alert(e.message); }
     };
   }
+}
+
+async function openAddMembers(groupId) {
+  let users = [];
+  try { users = (await api("listusers", { token })).users || []; }
+  catch (e) { alert(e.message); return; }
+  const existing = new Set((groupMembers || []).map(m => m.key));
+  const avail = users.filter(u => !existing.has(u.key));
+  const selected = new Set();
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h3>Mitglieder hinzufügen</h3>
+      <input id="addSearch" placeholder="Search members…" autocomplete="off">
+      <div class="members" id="addList"></div>
+      <div class="modal-actions">
+        <button class="btn-cancel" id="addCancel">Cancel</button>
+        <button class="btn-create" id="addDo">Hinzufügen</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const listEl = overlay.querySelector("#addList");
+  function drawList(q) {
+    listEl.innerHTML = "";
+    const filtered = avail.filter(u => !q || u.display.toLowerCase().includes(q) || u.key.includes(q));
+    if (!filtered.length) { listEl.innerHTML = `<div class="empty-list">${avail.length ? "No match." : "Alle Nutzer sind schon in der Gruppe."}</div>`; return; }
+    for (const u of filtered) {
+      const row = document.createElement("label");
+      row.className = "member-row";
+      row.innerHTML = `<input type="checkbox" ${selected.has(u.key) ? "checked" : ""}>
+        <div class="avatar" style="width:32px;height:32px;font-size:13px">${initials(u.display)}</div>
+        <span>${escapeHtml(u.display)}</span>`;
+      row.querySelector("input").onchange = e => { e.target.checked ? selected.add(u.key) : selected.delete(u.key); };
+      listEl.appendChild(row);
+    }
+  }
+  drawList("");
+  overlay.querySelector("#addSearch").oninput = e => drawList(e.target.value.trim().toLowerCase());
+  overlay.querySelector("#addCancel").onclick = () => overlay.remove();
+  overlay.querySelector("#addDo").onclick = async () => {
+    if (!selected.size) { alert("Wähle mindestens eine Person."); return; }
+    try {
+      await api("addmembers", { token, groupId, members: [...selected] });
+      overlay.remove();
+      lastListSig = ""; lastThreadJSON = "";
+      await poll();
+      alert("Mitglieder hinzugefügt. 👥");
+    } catch (e) { alert(e.message); }
+  };
 }
 
 function renderGroupView() {
@@ -773,11 +843,24 @@ function openProfileModal() {
       <label style="font-size:13px;color:var(--muted)">Profilbild hochladen:</label>
       <input type="file" id="avatarFile" accept="image/*">
       <div class="modal-actions">
+        <button class="btn-delete" id="profDelPhoto">Foto entfernen</button>
         <button class="btn-cancel" id="profCancel">Close</button>
         <button class="btn-create" id="profSave" disabled>Save photo</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
+  overlay.querySelector("#profDelPhoto").onclick = async () => {
+    if (!confirm("Dein Profilbild entfernen?")) return;
+    try {
+      await api("deleteavatar", { token });
+      avatarCache[myKey] = null;
+      applyAvatar($("myAvatar"), myKey, myName);
+      const p = overlay.querySelector("#profilePreview");
+      if (p) { p.classList.remove("has-img"); p.style.backgroundImage = ""; p.textContent = initials(myName); }
+      lastListSig = "";
+      renderChatList();
+    } catch (e) { alert(e.message); }
+  };
   overlay.querySelector("#nameSave").onclick = async () => {
     const name = overlay.querySelector("#nameInput").value.trim();
     if (!name) { alert("Gib einen Namen ein."); return; }
@@ -840,6 +923,11 @@ function openUserProfile(key, display) {
       <div style="display:flex;gap:8px">
         <input id="renInput" maxlength="24" value="${escapeHtml(display)}">
         <button class="btn-create" id="renSave" style="white-space:nowrap">Name</button>
+      </div>
+      <label style="font-size:13px;color:var(--muted)">Profilbild (als Owner):</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="file" id="otherAvatarFile" accept="image/*" style="flex:1">
+        <button class="btn-delete" id="otherDelPhoto" style="white-space:nowrap">Foto entfernen</button>
       </div>` : ""}
       <div class="modal-actions">
         ${canDelete ? `<button class="btn-delete" id="delUser">Delete account</button>` : ""}
@@ -861,6 +949,31 @@ function openUserProfile(key, display) {
         overlay.remove();
         alert(`Name geändert zu "${r.name}".`);
       } catch (e) { alert(e.message); }
+    };
+    overlay.querySelector("#otherAvatarFile").onchange = async e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const img = await resizeImage(file, 256);
+        await api("setavatar", { token, user: key, image: img });
+        avatarCache[key] = img;
+        applyAvatar(overlay.querySelector(".avatar"), key, display);
+        lastListSig = "";
+        renderChatList();
+        if (openChatWith === key) renderConversation();
+        alert("Profilbild geändert. 📸");
+      } catch (err) { alert(err.message || "Bild konnte nicht geladen werden."); }
+    };
+    overlay.querySelector("#otherDelPhoto").onclick = async () => {
+      if (!confirm(`Profilbild von "${display}" entfernen?`)) return;
+      try {
+        await api("deleteavatar", { token, user: key });
+        avatarCache[key] = null;
+        applyAvatar(overlay.querySelector(".avatar"), key, display);
+        lastListSig = "";
+        renderChatList();
+        if (openChatWith === key) renderConversation();
+      } catch (err) { alert(err.message); }
     };
   }
   if (canDelete) {

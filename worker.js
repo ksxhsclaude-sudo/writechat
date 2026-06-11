@@ -123,6 +123,14 @@ async function handleApi(request, env) {
       return json({ ok: true });
     }
 
+    if (action === "deleteannounce") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can delete announcements." }, 403);
+      const ts = Number(body.ts);
+      await DB.prepare("DELETE FROM announcements WHERE ts = ?").bind(ts).run();
+      return json({ ok: true });
+    }
+
     if (action === "listusers") {
       if (!me) return need();
       if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can do that." }, 403);
@@ -144,6 +152,21 @@ async function handleApi(request, env) {
       await DB.prepare("INSERT INTO groups (id, name, created_by, created) VALUES (?,?,?,?)").bind(id, name, me.key, now).run();
       await DB.batch(members.map(k => DB.prepare("INSERT INTO group_members (gid, userkey) VALUES (?,?)").bind(id, k)));
       return json({ ok: true, id, name });
+    }
+
+    if (action === "addmembers") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can add members." }, 403);
+      const id = String(body.groupId || "");
+      if (!await DB.prepare("SELECT 1 FROM groups WHERE id = ?").bind(id).first()) return json({ error: "Group not found." }, 404);
+      const want = [];
+      for (const m of (Array.isArray(body.members) ? body.members : [])) {
+        const k = norm(m);
+        if (k && !want.includes(k) && await DB.prepare("SELECT 1 FROM users WHERE key = ?").bind(k).first()) want.push(k);
+      }
+      if (!want.length) return json({ error: "Pick at least one member." }, 400);
+      await DB.batch(want.map(k => DB.prepare("INSERT OR IGNORE INTO group_members (gid, userkey) VALUES (?,?)").bind(id, k)));
+      return json({ ok: true, added: want.length });
     }
 
     if (action === "groupsend") {
@@ -187,11 +210,26 @@ async function handleApi(request, env) {
 
     if (action === "setavatar") {
       if (!me) return need();
+      let target = me.key;
+      if (body.user && norm(body.user) !== me.key) {
+        if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can change other people's photos." }, 403);
+        target = norm(body.user);
+      }
       const image = String(body.image || "");
       if (!image.startsWith("data:image/")) return json({ error: "Invalid image." }, 400);
       if (image.length > 900000) return json({ error: "Image too large." }, 400);
       await DB.prepare("INSERT INTO avatars (userkey, image) VALUES (?,?) ON CONFLICT(userkey) DO UPDATE SET image = excluded.image")
-        .bind(me.key, image).run();
+        .bind(target, image).run();
+      return json({ ok: true });
+    }
+    if (action === "deleteavatar") {
+      if (!me) return need();
+      let target = me.key;
+      if (body.user && norm(body.user) !== me.key) {
+        if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can remove other people's photos." }, 403);
+        target = norm(body.user);
+      }
+      await DB.prepare("DELETE FROM avatars WHERE userkey = ?").bind(target).run();
       return json({ ok: true });
     }
     if (action === "getavatar") {
@@ -341,7 +379,7 @@ async function handleApi(request, env) {
       }
 
       return json({
-        me: me.key, partners, messages, announcements, isAdmin: me.key === ADMIN_KEY,
+        me: me.key, meName: me.display, partners, messages, announcements, isAdmin: me.key === ADMIN_KEY,
         groups, groupMessages, groupMeta, presence, reads, annReaders, now,
       });
     }
