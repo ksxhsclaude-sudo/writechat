@@ -152,6 +152,7 @@
       </div>
       <div class="search-box"><input id="searchInput" placeholder="Search a friend's username…" autocomplete="off"></div>
       <div class="new-group" id="newGroupWrap" style="display:none"><button id="newGroupBtn">＋ New group</button></div>
+      <div class="new-group" id="codePanelWrap" style="display:none;padding-top:0"><button id="codePanelBtn">🎟️ Einladungscodes</button></div>
       <div class="chat-list" id="chatList"></div>
     </div>
     <div class="conversation" id="conversation"></div>
@@ -352,6 +353,7 @@ async function poll() {
       lastListSig = "";
     }
     $("newGroupWrap").style.display = isAdmin ? "block" : "none";
+    $("codePanelWrap").style.display = isAdmin ? "block" : "none";
     $("myName").textContent = isAdmin ? myName + " (owner)" : myName;
     applyAvatar($("myAvatar"), myKey, myName);
     renderChatList();
@@ -401,6 +403,7 @@ function markRead(key) {
 let searchTimer = null;
 $("searchInput").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(renderChatList, 250); };
 $("newGroupBtn").onclick = openGroupModal;
+$("codePanelBtn").onclick = openCodePanel;
 $("meBtn").onclick = openProfileModal;
 
 async function renderChatList() {
@@ -816,6 +819,82 @@ async function openGroupModal() {
       overlay.remove();
       await poll();
       openGroupChat(r.id, r.name);
+    } catch (e) { alert(e.message); }
+  };
+}
+
+/* ---- invite codes panel (owner) ---- */
+async function openCodePanel() {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h3>🎟️ Einladungscodes</h3>
+      <div style="display:flex;gap:8px">
+        <input id="customCode" placeholder="Eigener Code (optional, sonst zufällig)" autocomplete="off">
+        <button class="btn-create" id="genBtn" style="white-space:nowrap">Generieren</button>
+      </div>
+      <div class="members" id="codeList"><div class="empty-list">Lädt…</div></div>
+      <div id="masterLine" style="font-size:12px;color:var(--muted)"></div>
+      <div class="modal-actions">
+        <button class="btn-cancel" id="codeClose">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector("#codeClose").onclick = () => overlay.remove();
+
+  const listEl = overlay.querySelector("#codeList");
+  async function refresh() {
+    let data;
+    try { data = await api("listcodes", { token }); }
+    catch (e) { listEl.innerHTML = `<div class="empty-list">${escapeHtml(e.message)}</div>`; return; }
+    const codes = data.codes || [];
+    overlay.querySelector("#masterLine").innerHTML =
+      `🔒 Master-Code (geheim, mehrfach nutzbar, nicht weitergeben): <b>${escapeHtml(data.master || "")}</b>`;
+    const free = codes.filter(c => !c.usedBy);
+    const used = codes.filter(c => c.usedBy);
+    listEl.innerHTML = "";
+    const head = (t) => { const d = document.createElement("div"); d.style.cssText = "padding:8px 12px;font-size:12px;color:var(--muted);background:var(--panel2)"; d.textContent = t; listEl.appendChild(d); };
+    head(`Frei (${free.length})`);
+    if (!free.length) { const e = document.createElement("div"); e.className = "empty-list"; e.textContent = "Keine freien Codes — generier einen oben."; listEl.appendChild(e); }
+    for (const c of free) {
+      const row = document.createElement("div");
+      row.className = "member-row";
+      row.innerHTML = `<b style="font-family:monospace;font-size:15px;letter-spacing:1px">${escapeHtml(c.code)}</b>
+        <span style="margin-left:auto;display:flex;gap:8px">
+          <button class="btn-cancel" data-copy="${escapeHtml(c.code)}" style="padding:4px 10px;font-size:12px">Kopieren</button>
+          <button class="btn-delete" data-del="${escapeHtml(c.code)}" style="padding:4px 10px;font-size:12px">✕</button>
+        </span>`;
+      listEl.appendChild(row);
+    }
+    head(`Benutzt (${used.length})`);
+    for (const c of used) {
+      const row = document.createElement("div");
+      row.className = "member-row";
+      row.innerHTML = `<b style="font-family:monospace;font-size:14px;opacity:.6;text-decoration:line-through">${escapeHtml(c.code)}</b>
+        <span style="margin-left:auto;font-size:12px;color:var(--muted)">benutzt von ${escapeHtml(c.usedName || c.usedBy)}</span>`;
+      listEl.appendChild(row);
+    }
+    listEl.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
+      try { await navigator.clipboard.writeText(b.dataset.copy); b.textContent = "Kopiert ✓"; setTimeout(() => b.textContent = "Kopieren", 1200); }
+      catch { prompt("Code kopieren:", b.dataset.copy); }
+    });
+    listEl.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+      if (!confirm(`Code "${b.dataset.del}" löschen?`)) return;
+      try { await api("delcode", { token, code: b.dataset.del }); refresh(); }
+      catch (e) { alert(e.message); }
+    });
+  }
+  refresh();
+
+  overlay.querySelector("#genBtn").onclick = async () => {
+    const custom = overlay.querySelector("#customCode").value.trim();
+    try {
+      const r = await api("gencode", { token, code: custom });
+      overlay.querySelector("#customCode").value = "";
+      await refresh();
+      try { await navigator.clipboard.writeText(r.code); } catch {}
+      alert(`Code erstellt: ${r.code}\n(schon in die Zwischenablage kopiert)`);
     } catch (e) { alert(e.message); }
   };
 }

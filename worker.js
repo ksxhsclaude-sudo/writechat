@@ -2,7 +2,7 @@
 // Serves the page (public/) and handles the /api endpoint.
 
 const ADMIN_KEY = "hsadmin";
-const VALID_CODES = ["auto1", "auto2", "auto3", "auto4", "auto5", "auto6", "auto7", "auto8", "auto9", "auto10"];
+const VALID_CODES = [];   // no fixed codes — the owner generates all invite codes in the panel
 const MASTER_CODE = "hschef";
 const USER_RE = /^[a-zA-Z0-9_-]{2,20}$/;
 
@@ -23,6 +23,12 @@ function randHex(n) {
   return [...a].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 const token = () => randHex(24);
+function genCodeStr() {
+  const chars = "abcdefghijkmnpqrstuvwxyz23456789";   // no easily-confused chars
+  const a = new Uint8Array(6);
+  crypto.getRandomValues(a);
+  return [...a].map(b => chars[b % chars.length]).join("");
+}
 
 async function hashPw(pw, salt) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("writechat:" + salt + ":" + pw));
@@ -64,16 +70,25 @@ async function handleApi(request, env) {
 
       const code = norm(body.code);
       const isMaster = code === MASTER_CODE;
+      let usedGenerated = false;   // an unused code that's already a row in invites
       if (!isMaster) {
-        if (!VALID_CODES.includes(code)) return json({ error: "Ungültiger Einladungscode." }, 403);
-        if (await DB.prepare("SELECT 1 FROM invites WHERE code = ?").bind(code).first()) return json({ error: "Dieser Einladungscode wurde schon benutzt." }, 403);
+        const inv = await DB.prepare("SELECT used_by FROM invites WHERE code = ?").bind(code).first();
+        if (inv) {
+          if (inv.used_by) return json({ error: "Dieser Einladungscode wurde schon benutzt." }, 403);
+          usedGenerated = true;                                  // generated code, still free
+        } else if (!VALID_CODES.includes(code)) {
+          return json({ error: "Ungültiger Einladungscode." }, 403);
+        }                                                        // else: built-in code, still free
       }
 
       const salt = randHex(16);
       const tk = token();
       await DB.prepare("INSERT INTO users (key, display, hash, salt, token, created) VALUES (?,?,?,?,?,?)")
         .bind(key, uname, await hashPw(pass, salt), salt, tk, now).run();
-      if (!isMaster) await DB.prepare("INSERT INTO invites (code, used_by) VALUES (?,?)").bind(code, key).run();
+      if (!isMaster) {
+        if (usedGenerated) await DB.prepare("UPDATE invites SET used_by = ? WHERE code = ?").bind(key, code).run();
+        else await DB.prepare("INSERT INTO invites (code, used_by) VALUES (?,?)").bind(code, key).run();
+      }
       return json({ token: tk, username: uname, key });
     }
 
@@ -128,6 +143,44 @@ async function handleApi(request, env) {
       if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can delete announcements." }, 403);
       const ts = Number(body.ts);
       await DB.prepare("DELETE FROM announcements WHERE ts = ?").bind(ts).run();
+      return json({ ok: true });
+    }
+
+    if (action === "gencode") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can create codes." }, 403);
+      let code = norm(body.code);
+      if (code) {
+        if (!/^[a-z0-9_-]{3,20}$/.test(code)) return json({ error: "Code: 3–20 Buchstaben/Zahlen, _ oder -" }, 400);
+        if (code === MASTER_CODE || VALID_CODES.includes(code)) return json({ error: "Dieser Code ist reserviert." }, 400);
+        if (await DB.prepare("SELECT 1 FROM invites WHERE code = ?").bind(code).first()) return json({ error: "Diesen Code gibt es schon." }, 400);
+      } else {
+        do { code = genCodeStr(); } while (await DB.prepare("SELECT 1 FROM invites WHERE code = ?").bind(code).first());
+      }
+      await DB.prepare("INSERT INTO invites (code, used_by) VALUES (?, NULL)").bind(code).run();
+      return json({ ok: true, code });
+    }
+
+    if (action === "listcodes") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can view codes." }, 403);
+      const rows = (await DB.prepare("SELECT i.code, i.used_by, u.display FROM invites i LEFT JOIN users u ON u.key = i.used_by").all()).results || [];
+      const map = {};
+      for (const r of rows) map[r.code] = { usedBy: r.used_by || null, usedName: r.display || null };
+      const codes = [];
+      for (const c of VALID_CODES) codes.push({ code: c, usedBy: map[c] ? map[c].usedBy : null, usedName: map[c] ? map[c].usedName : null, builtin: true });
+      for (const r of rows) if (!VALID_CODES.includes(r.code)) codes.push({ code: r.code, usedBy: r.used_by || null, usedName: r.display || null, builtin: false });
+      return json({ codes, master: MASTER_CODE });
+    }
+
+    if (action === "delcode") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can delete codes." }, 403);
+      const code = norm(body.code);
+      const inv = await DB.prepare("SELECT used_by FROM invites WHERE code = ?").bind(code).first();
+      if (!inv) return json({ error: "Code nicht gefunden." }, 404);
+      if (inv.used_by) return json({ error: "Benutzte Codes können nicht gelöscht werden." }, 400);
+      await DB.prepare("DELETE FROM invites WHERE code = ?").bind(code).run();
       return json({ ok: true });
     }
 
