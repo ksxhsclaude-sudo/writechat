@@ -1,0 +1,14 @@
+name = "writechat"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# The page lives in /public and is served as static files.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# The chat database (D1). database_id comes from your D1 page.
+[[d1_databases]]
+binding = "DB"
+database_name = "writechat"
+database_id = "959e2fde-04fd-4fbe-92ef-0cd6ec5fa8b0"
