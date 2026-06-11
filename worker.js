@@ -2,7 +2,7 @@
 // Serves the page (public/) and handles the /api endpoint.
 
 const ADMIN_KEY = "hsadmin";
-const VALID_CODES = ["tomate1", "tomate2", "tomate3", "tomate4", "tomate5", "tomate6", "tomate7", "tomate8", "tomate9", "tomate10"];
+const VALID_CODES = ["auto1", "auto2", "auto3", "auto4", "auto5", "auto6", "auto7", "auto8", "auto9", "auto10"];
 const MASTER_CODE = "hschef";
 const USER_RE = /^[a-zA-Z0-9_-]{2,20}$/;
 
