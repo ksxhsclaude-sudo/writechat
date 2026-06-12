@@ -301,7 +301,7 @@ async function handleApi(request, env) {
       await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
       const image = String(body.image || "");
       if (!image.startsWith("data:image/")) return json({ error: "Invalid image." }, 400);
-      if (image.length > 900000) return json({ error: "Image too large." }, 400);
+      if (image.length > 2500000) return json({ error: "Image too large." }, 400);
       const id = "m_" + randHex(10);
       await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(id, image, me.key, now).run();
       return json({ ok: true, id });

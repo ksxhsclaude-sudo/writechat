@@ -291,9 +291,9 @@ function resizePhoto(file, maxDim) {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "high";
         ctx.drawImage(img, 0, 0, w, h);
-        // start at high quality, step down only if needed to stay under the 900 KB server limit
-        let q = 0.92, out = c.toDataURL("image/jpeg", q);
-        while (out.length > 880000 && q > 0.5) { q -= 0.08; out = c.toDataURL("image/jpeg", q); }
+        // start at high quality, step down only if needed to stay under the server limit
+        let q = 0.93, out = c.toDataURL("image/jpeg", q);
+        while (out.length > 2400000 && q > 0.5) { q -= 0.07; out = c.toDataURL("image/jpeg", q); }
         resolve(out);
       };
       img.onerror = reject;
@@ -353,7 +353,7 @@ async function sendPhotoFile(file, sendFn) {
   if (!file) return;
   if (!file.type || !file.type.startsWith("image/")) { alert("Bitte ein Bild auswählen."); return; }
   try {
-    const data = await resizePhoto(file, 1600);
+    const data = await resizePhoto(file, 2048);
     const r = await api("uploadmedia", { token, image: data });
     mediaCache[r.id] = data;               // show instantly without a re-fetch
     await sendFn(MEDIA_PREFIX + r.id);
