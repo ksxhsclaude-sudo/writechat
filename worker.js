@@ -143,7 +143,9 @@ async function handleApi(request, env) {
       if (!me) return need();
       if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can delete announcements." }, 403);
       const ts = Number(body.ts);
+      const a = await DB.prepare("SELECT text FROM announcements WHERE ts = ? LIMIT 1").bind(ts).first();
       await DB.prepare("DELETE FROM announcements WHERE ts = ?").bind(ts).run();
+      if (a && a.text && a.text.startsWith(MEDIA_PREFIX)) await DB.prepare("DELETE FROM media WHERE id = ?").bind(a.text.slice(MEDIA_PREFIX.length)).run();
       return json({ ok: true });
     }
 
@@ -327,6 +329,7 @@ async function handleApi(request, env) {
       await DB.batch([
         DB.prepare("DELETE FROM messages WHERE text LIKE ?").bind(like),
         DB.prepare("DELETE FROM group_messages WHERE text LIKE ?").bind(like),
+        DB.prepare("DELETE FROM announcements WHERE text LIKE ?").bind(like),
         DB.prepare("DELETE FROM media"),
       ]);
       return json({ ok: true, removed: cnt ? cnt.n : 0 });

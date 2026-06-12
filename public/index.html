@@ -519,7 +519,7 @@ async function renderChatList() {
     it.kind === "dm" ? (isOnline(presence[it.key]) ? 1 : 0) : 0,
     it.kind === "dm" && it.from === it.key && (it.ts || 0) > (lastRead[it.key] || 0) ? 1 : 0,
     it.kind === "group" ? groupUnread(it) : 0,
-  ])) + "|ann:" + (latestAnn ? latestAnn.text + latestAnn.ts : "none") + "|open:" + openChatWith;
+  ])) + "|ann:" + (latestAnn ? latestAnn.text + latestAnn.ts : "none") + "|annu:" + annUnread() + "|open:" + openChatWith;
   if (sig === lastListSig) return;
   lastListSig = sig;
   list.innerHTML = "";
@@ -576,12 +576,14 @@ function announcementItem() {
   const latest = announcements.length ? announcements[announcements.length - 1] : null;
   const el = document.createElement("div");
   el.className = "chat-item ann" + (openChatWith === ANN ? " active" : "");
+  const unread = annUnread();
   el.innerHTML = `
     <div class="avatar" style="background:#b8860b">📢</div>
     <div class="info">
       <div class="top"><span class="uname">Announcements</span>
         ${latest ? `<span class="time">${fmtTime(latest.ts)}</span>` : ""}</div>
-      <div class="top"><span class="preview">${latest ? escapeHtml(latest.text) : "No announcements yet"}</span></div>
+      <div class="top"><span class="preview">${latest ? escapeHtml(previewText(latest.text)) : "No announcements yet"}</span>
+        ${unread ? `<span class="badge">${unread}</span>` : ""}</div>
     </div>`;
   el.onclick = openAnnouncements;
   return el;
@@ -591,6 +593,7 @@ function openAnnouncements() {
   openChatWith = ANN; openChatName = "Announcements";
   $("searchInput").value = "";
   lastThreadJSON = "";
+  markRead(ANN);
   renderChatList();
   renderConversation();
   poll();
@@ -608,7 +611,10 @@ function renderAnnouncementsView() {
         <div class="status">${isAdmin ? "You can post here" : "From the owner — read only"}</div></div>
     </div>
     <div class="messages" id="messages"><div style="margin:auto;color:var(--muted);font-size:13px">Loading…</div></div>
-    ${isAdmin ? `<div class="composer"><input id="msgInput" placeholder="Write an announcement…" autocomplete="off"><button id="sendBtn">➤</button></div>` : ""}`;
+    ${isAdmin ? `<div class="composer">
+      <button class="attach" id="attachBtn" title="Foto senden">📎</button>
+      <input type="file" id="photoInput" accept="image/*" style="display:none">
+      <input id="msgInput" placeholder="Write an announcement…" autocomplete="off"><button id="sendBtn">➤</button></div>` : ""}`;
   if (isAdmin) {
     const input = $("msgInput");
     const send = async () => {
@@ -620,6 +626,8 @@ function renderAnnouncementsView() {
     };
     $("sendBtn").onclick = send;
     input.onkeydown = e => { if (e.key === "Enter") send(); };
+    $("attachBtn").onclick = () => $("photoInput").click();
+    $("photoInput").onchange = e => { const f = e.target.files[0]; e.target.value = ""; sendPhotoFile(f, text => api("announce", { token, text })); };
     input.focus();
   }
   const back = $("backBtn");
@@ -641,19 +649,23 @@ function renderAnnouncements(list) {
   }
   box.innerHTML = "";
   for (const a of list) {
+    const isImg = isImageMsg(a.text);
+    const content = isImg ? mediaImgTag(a.text.slice(MEDIA_PREFIX.length)) : escapeHtml(a.text);
     const b = document.createElement("div");
-    b.className = "bubble them";
+    b.className = "bubble them" + (isImg ? " img-bubble" : "");
     b.style.maxWidth = "85%";
     let seenLine = "";
     if (isAdmin) {
       const seers = (annReaders || []).filter(r => r.key !== myKey && r.ts >= a.ts);
       seenLine = `<div class="seenby">${seers.length ? "👁 Gesehen von: " + seers.map(s => escapeHtml(s.name)).join(", ") : "👁 Noch nicht gesehen"}</div>`;
     }
-    b.innerHTML = `${escapeHtml(a.text)}<div class="t">${fmtDateTime(a.ts)}</div>${seenLine}${isAdmin ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    b.innerHTML = `${content}<div class="t">${fmtDateTime(a.ts)}</div>${seenLine}${isAdmin ? `<span class="del" title="Delete">✕</span>` : ""}`;
     if (isAdmin) b.querySelector(".del").onclick = () => deleteAnnounce(a.ts);
     box.appendChild(b);
   }
+  wireChatImages(box);
   if (nearBottom) box.scrollTop = box.scrollHeight;
+  markRead(ANN);
   markSeenCurrent();
 }
 
@@ -680,6 +692,10 @@ function groupItem(it, unread) {
 }
 function groupUnread(it) {
   return (it.from && it.from !== myKey && (it.ts || 0) > (lastRead[it.key] || 0)) ? 1 : 0;
+}
+function annUnread() {
+  const latest = announcements.length ? announcements[announcements.length - 1] : null;
+  return latest && (latest.ts || 0) > (lastRead[ANN] || 0) ? 1 : 0;
 }
 
 function openGroupChat(id, name) {
