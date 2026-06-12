@@ -85,6 +85,14 @@
   .composer button { width: 46px; height: 46px; border-radius: 50%; border: none;
     background: var(--accent); color: #fff; font-size: 20px; cursor: pointer; flex-shrink: 0; }
   .composer button:hover { background: #029b78; }
+  .composer .attach { width: 46px; height: 46px; border-radius: 50%; border: none;
+    background: #2a3942; color: var(--text); font-size: 20px; cursor: pointer; flex-shrink: 0; }
+  .composer .attach:hover { background: #33444d; }
+  .chat-img { max-width: 240px; max-height: 280px; border-radius: 8px; display: block; cursor: pointer; }
+  .bubble.img-bubble { padding: 4px; }
+  .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.9); display: flex;
+    align-items: center; justify-content: center; z-index: 100; cursor: zoom-out; }
+  .lightbox img { max-width: 94vw; max-height: 94vh; border-radius: 6px; }
   .no-chat { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
     color: var(--muted); gap: 12px; text-align: center; padding: 20px; }
   .no-chat .big { font-size: 22px; color: var(--text); }
@@ -153,6 +161,7 @@
       <div class="search-box"><input id="searchInput" placeholder="Search a friend's username…" autocomplete="off"></div>
       <div class="new-group" id="newGroupWrap" style="display:none"><button id="newGroupBtn">＋ New group</button></div>
       <div class="new-group" id="codePanelWrap" style="display:none;padding-top:0"><button id="codePanelBtn">🎟️ Einladungscodes</button></div>
+      <div class="new-group" id="ownerPanelWrap" style="display:none;padding-top:0"><button id="ownerPanelBtn">⚙️ Owner-Panel</button></div>
       <div class="chat-list" id="chatList"></div>
     </div>
     <div class="conversation" id="conversation"></div>
@@ -176,6 +185,17 @@ let avatarCache = {};           // userKey -> dataURL string, or null if none
 let avatarPending = {};         // userKey -> true while fetching
 const ANN = "@announcements";   // special id for the announcements channel
 const isGroupId = id => typeof id === "string" && id.startsWith("g_");
+const MEDIA_PREFIX = "\u0001img:";   // a message whose text is this + media-id is a photo
+let mediaCache = {};            // mediaId -> dataURL
+let mediaPending = {};          // mediaId -> true while fetching
+const isImageMsg = t => typeof t === "string" && t.startsWith(MEDIA_PREFIX);
+function previewText(t) {
+  if (!t) return "";
+  const i = t.indexOf(MEDIA_PREFIX);
+  if (i === 0) return "📷 Foto";
+  if (i > 0) return t.slice(0, i) + "📷 Foto";   // group form "Name: <marker>"
+  return t;
+}
 let presence = {}, readsMap = {}, annReaders = null, serverNow = Date.now(), touchedAt = 0;
 let groupMembers = [];
 let lastListSig = "";   // skip re-drawing the sidebar unless something changed
@@ -254,6 +274,57 @@ function resizeImage(file, size) {
   });
 }
 
+function resizePhoto(file, maxDim) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (w > maxDim || h > maxDim) {
+          if (w >= h) { h = Math.round(h * maxDim / w); w = maxDim; }
+          else { w = Math.round(w * maxDim / h); h = maxDim; }
+        }
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        c.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL("image/jpeg", 0.8));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+async function ensureMedia(id) {
+  if (id in mediaCache || mediaPending[id]) return;
+  mediaPending[id] = true;
+  try { mediaCache[id] = (await api("getmedia", { token, id })).image || null; }
+  catch { mediaCache[id] = null; }
+  mediaPending[id] = false;
+  if (!mediaCache[id]) return;
+  document.querySelectorAll(`img.chat-img[data-mid="${id}"]`).forEach(el => { el.src = mediaCache[id]; });
+}
+function mediaImgTag(id) {
+  ensureMedia(id);
+  const src = mediaCache[id];
+  return `<img class="chat-img" data-mid="${id}" ${src ? `src="${src}"` : ""} alt="Foto">`;
+}
+function openLightbox(src) {
+  if (!src) return;
+  const lb = document.createElement("div");
+  lb.className = "lightbox";
+  lb.innerHTML = `<img src="${src}" alt="Foto">`;
+  lb.onclick = () => lb.remove();
+  document.body.appendChild(lb);
+}
+function wireChatImages(box) {
+  box.querySelectorAll("img.chat-img").forEach(el => {
+    el.onclick = () => openLightbox(el.src || mediaCache[el.dataset.mid]);
+  });
+}
+
 const $ = id => document.getElementById(id);
 const norm = s => s.trim().toLowerCase();
 const initials = n => n.slice(0, 2).toUpperCase();
@@ -270,6 +341,19 @@ async function api(action, extra) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Something went wrong.");
   return data;
+}
+
+async function sendPhotoFile(file, sendFn) {
+  if (!file) return;
+  if (!file.type || !file.type.startsWith("image/")) { alert("Bitte ein Bild auswählen."); return; }
+  try {
+    const data = await resizePhoto(file, 1024);
+    const r = await api("uploadmedia", { token, image: data });
+    mediaCache[r.id] = data;               // show instantly without a re-fetch
+    await sendFn(MEDIA_PREFIX + r.id);
+    markRead(openChatWith);
+    await poll();
+  } catch (e) { alert(e.message || "Bild konnte nicht gesendet werden."); }
 }
 
 /* ---- auth ---- */
@@ -354,6 +438,7 @@ async function poll() {
     }
     $("newGroupWrap").style.display = isAdmin ? "block" : "none";
     $("codePanelWrap").style.display = isAdmin ? "block" : "none";
+    $("ownerPanelWrap").style.display = isAdmin ? "block" : "none";
     $("myName").textContent = isAdmin ? myName + " (owner)" : myName;
     applyAvatar($("myAvatar"), myKey, myName);
     renderChatList();
@@ -404,6 +489,7 @@ let searchTimer = null;
 $("searchInput").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(renderChatList, 250); };
 $("newGroupBtn").onclick = openGroupModal;
 $("codePanelBtn").onclick = openCodePanel;
+$("ownerPanelBtn").onclick = openOwnerPanel;
 $("meBtn").onclick = openProfileModal;
 
 async function renderChatList() {
@@ -450,7 +536,7 @@ async function renderChatList() {
       list.appendChild(groupItem(it, groupUnread(it)));
     } else {
       const unread = (it.from === it.key && (it.ts || 0) > (lastRead[it.key] || 0)) ? 1 : 0;
-      list.appendChild(chatItem(it.key, it.name || it.key, it.last || "", it.ts, unread, false));
+      list.appendChild(chatItem(it.key, it.name || it.key, previewText(it.last || ""), it.ts, unread, false));
     }
   }
 }
@@ -586,7 +672,7 @@ function groupItem(it, unread) {
     <div class="info">
       <div class="top"><span class="uname">${escapeHtml(it.name || "Group")}</span>
         ${it.ts ? `<span class="time">${fmtTime(it.ts)}</span>` : ""}</div>
-      <div class="top"><span class="preview">${escapeHtml(it.last || "No messages yet")}</span>
+      <div class="top"><span class="preview">${escapeHtml(previewText(it.last) || "No messages yet")}</span>
         ${unread ? `<span class="badge">${unread}</span>` : ""}</div>
     </div>`;
   el.onclick = () => openGroupChat(it.key, it.name);
@@ -706,11 +792,15 @@ function renderGroupView() {
     </div>
     <div class="messages" id="messages"><div style="margin:auto;color:var(--muted);font-size:13px">Loading…</div></div>
     <div class="composer">
+      <button class="attach" id="attachBtn" title="Foto senden">📎</button>
+      <input type="file" id="photoInput" accept="image/*" style="display:none">
       <input id="msgInput" placeholder="Message the group…" autocomplete="off">
       <button id="sendBtn">➤</button>
     </div>`;
   const gi = $("grpInfo");
   if (gi) gi.onclick = () => openGroupInfo(openChatWith);
+  $("attachBtn").onclick = () => $("photoInput").click();
+  $("photoInput").onchange = e => { const f = e.target.files[0]; e.target.value = ""; sendPhotoFile(f, text => api("groupsend", { token, groupId: openChatWith, text })); };
   const input = $("msgInput");
   const send = async () => {
     const text = input.value.trim();
@@ -757,12 +847,15 @@ function renderGroup(messages, meta) {
         ? `<div class="seenby">👁 Gesehen von: ${seers.map(s => escapeHtml(s.name)).join(", ")}</div>`
         : `<div class="seenby" style="opacity:.55">✓ Gesendet</div>`;
     }
+    const img = isImageMsg(m.text);
+    const content = img ? mediaImgTag(m.text.slice(MEDIA_PREFIX.length)) : escapeHtml(m.text);
     const b = document.createElement("div");
-    b.className = "bubble " + (mine ? "me" : "them");
-    b.innerHTML = `${mine ? "" : `<div class="sender">${escapeHtml(m.fromName || m.from)}</div>`}${escapeHtml(m.text)}<div class="t">${fmtDateTime(m.ts)}</div>${seenLine}${canDel ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    b.className = "bubble " + (mine ? "me" : "them") + (img ? " img-bubble" : "");
+    b.innerHTML = `${mine ? "" : `<div class="sender">${escapeHtml(m.fromName || m.from)}</div>`}${content}<div class="t">${fmtDateTime(m.ts)}</div>${seenLine}${canDel ? `<span class="del" title="Delete">✕</span>` : ""}`;
     if (canDel) b.querySelector(".del").onclick = () => deleteGroupMsg(m.ts);
     box.appendChild(b);
   }
+  wireChatImages(box);
   if (nearBottom) box.scrollTop = box.scrollHeight;
   markSeenCurrent();
 }
@@ -896,6 +989,60 @@ async function openCodePanel() {
       try { await navigator.clipboard.writeText(r.code); } catch {}
       alert(`Code erstellt: ${r.code}\n(schon in die Zwischenablage kopiert)`);
     } catch (e) { alert(e.message); }
+  };
+}
+
+/* ---- owner panel (stats + media reset) ---- */
+async function openOwnerPanel() {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-card">
+      <h3>⚙️ Owner-Panel</h3>
+      <div style="background:var(--panel2);border-radius:10px;padding:14px">
+        <div style="font-size:13px;color:var(--muted);margin-bottom:6px">Speicher</div>
+        <div id="ownerStats" style="font-size:14px">Lädt…</div>
+        <div style="height:8px;background:#0b141a;border-radius:5px;overflow:hidden;margin-top:10px">
+          <div id="ownerBar" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
+        </div>
+      </div>
+      <button class="btn-delete" id="ownerClearBtn" style="width:100%;padding:11px;border:none;border-radius:8px;font-weight:600;cursor:pointer">🗑️ Alle Chat-Fotos löschen (Reset)</button>
+      <div style="font-size:12px;color:var(--muted)">Löscht alle Fotos aus allen Chats & Gruppen. Texte bleiben. Macht den Speicher wieder frei.</div>
+      <div class="modal-actions">
+        <button class="btn-cancel" id="ownerClose">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector("#ownerClose").onclick = () => overlay.remove();
+
+  const statsEl = overlay.querySelector("#ownerStats");
+  const barEl = overlay.querySelector("#ownerBar");
+  async function loadStats() {
+    try {
+      const s = await api("mediastats", { token });
+      const mb = s.bytes / 1024 / 1024;
+      const pct = Math.min(100, (s.bytes / (5 * 1024 * 1024 * 1024)) * 100);
+      statsEl.innerHTML = `📷 <b>${s.count}</b> Fotos insgesamt<br>${mb < 1 ? (s.bytes / 1024).toFixed(0) + " KB" : mb.toFixed(1) + " MB"} von 5 GB belegt (${pct.toFixed(pct < 1 ? 2 : 1)}%)`;
+      barEl.style.width = Math.max(pct, pct > 0 ? 1 : 0) + "%";
+      barEl.style.background = pct > 85 ? "#b3261e" : "var(--accent)";
+    } catch (e) { statsEl.textContent = "Statistik nicht verfügbar: " + e.message; }
+  }
+  loadStats();
+
+  const clearBtn = overlay.querySelector("#ownerClearBtn");
+  clearBtn.onclick = async () => {
+    if (!confirm("ALLE Fotos aus ALLEN Chats & Gruppen löschen? Texte bleiben erhalten. Das kann nicht rückgängig gemacht werden.")) return;
+    if (!confirm("Wirklich sicher? Danach sind alle Bilder weg und der Speicher ist frei.")) return;
+    clearBtn.disabled = true; clearBtn.textContent = "Lösche…";
+    try {
+      const r = await api("clearmedia", { token });
+      mediaCache = {}; mediaPending = {};
+      lastThreadJSON = ""; lastListSig = "";
+      await poll();
+      await loadStats();
+      alert(`✅ ${r.removed} Fotos gelöscht. Speicher ist wieder frei.`);
+    } catch (e) { alert(e.message); }
+    finally { clearBtn.disabled = false; clearBtn.textContent = "🗑️ Alle Chat-Fotos löschen (Reset)"; }
   };
 }
 
@@ -1091,11 +1238,15 @@ function renderConversation() {
     </div>
     <div class="messages" id="messages"><div style="margin:auto;color:var(--muted);font-size:13px">Loading…</div></div>
     <div class="composer">
+      <button class="attach" id="attachBtn" title="Foto senden">📎</button>
+      <input type="file" id="photoInput" accept="image/*" style="display:none">
       <input id="msgInput" placeholder="Write a message…" autocomplete="off">
       <button id="sendBtn">➤</button>
     </div>`;
   const prof = $("dmProfile");
   if (prof) prof.onclick = () => openUserProfile(openChatWith, display);
+  $("attachBtn").onclick = () => $("photoInput").click();
+  $("photoInput").onchange = e => { const f = e.target.files[0]; e.target.value = ""; sendPhotoFile(f, text => api("send", { token, to: openChatWith, text })); };
 
   const input = $("msgInput");
   const send = async () => {
@@ -1129,12 +1280,15 @@ function renderThread(msgs) {
     const canDel = mine || isAdmin;
     const seen = (readsMap[openChatWith] || 0) >= m.ts;
     const ticks = mine ? ` <span class="ticks ${seen ? "seen" : ""}">${seen ? "✓✓" : "✓"}</span>` : "";
+    const img = isImageMsg(m.text);
+    const content = img ? mediaImgTag(m.text.slice(MEDIA_PREFIX.length)) : escapeHtml(m.text);
     const b = document.createElement("div");
-    b.className = "bubble " + (mine ? "me" : "them");
-    b.innerHTML = `${escapeHtml(m.text)}<div class="t">${fmtDateTime(m.ts)}${ticks}</div>${canDel ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    b.className = "bubble " + (mine ? "me" : "them") + (img ? " img-bubble" : "");
+    b.innerHTML = `${content}<div class="t">${fmtDateTime(m.ts)}${ticks}</div>${canDel ? `<span class="del" title="Delete">✕</span>` : ""}`;
     if (canDel) b.querySelector(".del").onclick = () => deleteDM(m.ts);
     box.appendChild(b);
   }
+  wireChatImages(box);
   if (nearBottom) box.scrollTop = box.scrollHeight;
   markRead(openChatWith);
   markSeenCurrent();

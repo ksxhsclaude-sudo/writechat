@@ -5,6 +5,7 @@ const ADMIN_KEY = "hsadmin";
 const VALID_CODES = [];   // no fixed codes — the owner generates all invite codes in the panel
 const MASTER_CODE = "hschef";
 const USER_RE = /^[a-zA-Z0-9_-]{2,20}$/;
+const MEDIA_PREFIX = "\u0001img:";   // a message text that is this + media-id is a photo
 
 const norm = s => String(s || "").trim().toLowerCase();
 const convId = (a, b) => [a, b].sort().join("__");
@@ -240,11 +241,12 @@ async function handleApi(request, env) {
       const toKey = norm(body.to);
       const ts = Number(body.ts);
       const m = await DB.prepare(
-        "SELECT id, sender FROM messages WHERE ts = ? AND ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) LIMIT 1"
+        "SELECT id, sender, text FROM messages WHERE ts = ? AND ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) LIMIT 1"
       ).bind(ts, me.key, toKey, toKey, me.key).first();
       if (!m) return json({ error: "Message not found." }, 404);
       if (m.sender !== me.key && me.key !== ADMIN_KEY) return json({ error: "You can only delete your own messages." }, 403);
       await DB.prepare("DELETE FROM messages WHERE id = ?").bind(m.id).run();
+      if (m.text && m.text.startsWith(MEDIA_PREFIX)) await DB.prepare("DELETE FROM media WHERE id = ?").bind(m.text.slice(MEDIA_PREFIX.length)).run();
       return json({ ok: true });
     }
 
@@ -254,10 +256,11 @@ async function handleApi(request, env) {
       if (!await DB.prepare("SELECT 1 FROM group_members WHERE gid = ? AND userkey = ?").bind(id, me.key).first())
         return json({ error: "You're not in this group." }, 403);
       const ts = Number(body.ts);
-      const m = await DB.prepare("SELECT id, sender FROM group_messages WHERE gid = ? AND ts = ? LIMIT 1").bind(id, ts).first();
+      const m = await DB.prepare("SELECT id, sender, text FROM group_messages WHERE gid = ? AND ts = ? LIMIT 1").bind(id, ts).first();
       if (!m) return json({ error: "Message not found." }, 404);
       if (m.sender !== me.key && me.key !== ADMIN_KEY) return json({ error: "You can only delete your own messages." }, 403);
       await DB.prepare("DELETE FROM group_messages WHERE id = ?").bind(m.id).run();
+      if (m.text && m.text.startsWith(MEDIA_PREFIX)) await DB.prepare("DELETE FROM media WHERE id = ?").bind(m.text.slice(MEDIA_PREFIX.length)).run();
       return json({ ok: true });
     }
 
@@ -289,6 +292,44 @@ async function handleApi(request, env) {
       if (!me) return need();
       const r = await DB.prepare("SELECT image FROM avatars WHERE userkey = ?").bind(norm(body.user)).first();
       return json({ image: r ? r.image : null });
+    }
+
+    if (action === "uploadmedia") {
+      if (!me) return need();
+      await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
+      const image = String(body.image || "");
+      if (!image.startsWith("data:image/")) return json({ error: "Invalid image." }, 400);
+      if (image.length > 900000) return json({ error: "Image too large." }, 400);
+      const id = "m_" + randHex(10);
+      await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(id, image, me.key, now).run();
+      return json({ ok: true, id });
+    }
+    if (action === "getmedia") {
+      if (!me) return need();
+      await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
+      const r = await DB.prepare("SELECT data FROM media WHERE id = ?").bind(String(body.id || "")).first();
+      return json({ image: r ? r.data : null });
+    }
+    if (action === "mediastats") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can see stats." }, 403);
+      await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
+      const r = await DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(length(data)), 0) AS bytes FROM media").first();
+      return json({ count: r ? r.n : 0, bytes: r ? r.bytes : 0 });
+    }
+
+    if (action === "clearmedia") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can clear photos." }, 403);
+      await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
+      const cnt = await DB.prepare("SELECT COUNT(*) AS n FROM media").first();
+      const like = MEDIA_PREFIX + "%";
+      await DB.batch([
+        DB.prepare("DELETE FROM messages WHERE text LIKE ?").bind(like),
+        DB.prepare("DELETE FROM group_messages WHERE text LIKE ?").bind(like),
+        DB.prepare("DELETE FROM media"),
+      ]);
+      return json({ ok: true, removed: cnt ? cnt.n : 0 });
     }
 
     if (action === "deleteuser") {
