@@ -88,7 +88,7 @@
   .composer .attach { width: 46px; height: 46px; border-radius: 50%; border: none;
     background: #2a3942; color: var(--text); font-size: 20px; cursor: pointer; flex-shrink: 0; }
   .composer .attach:hover { background: #33444d; }
-  .chat-img { max-width: 240px; max-height: 280px; border-radius: 8px; display: block; cursor: pointer; }
+  .chat-img { max-width: 300px; max-height: 360px; border-radius: 8px; display: block; cursor: pointer; }
   .bubble.img-bubble { padding: 4px; }
   .lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.9); display: flex;
     align-items: center; justify-content: center; z-index: 100; cursor: zoom-out; }
@@ -287,8 +287,14 @@ function resizePhoto(file, maxDim) {
         }
         const c = document.createElement("canvas");
         c.width = w; c.height = h;
-        c.getContext("2d").drawImage(img, 0, 0, w, h);
-        resolve(c.toDataURL("image/jpeg", 0.8));
+        const ctx = c.getContext("2d");
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(img, 0, 0, w, h);
+        // start at high quality, step down only if needed to stay under the 900 KB server limit
+        let q = 0.92, out = c.toDataURL("image/jpeg", q);
+        while (out.length > 880000 && q > 0.5) { q -= 0.08; out = c.toDataURL("image/jpeg", q); }
+        resolve(out);
       };
       img.onerror = reject;
       img.src = reader.result;
@@ -347,7 +353,7 @@ async function sendPhotoFile(file, sendFn) {
   if (!file) return;
   if (!file.type || !file.type.startsWith("image/")) { alert("Bitte ein Bild auswählen."); return; }
   try {
-    const data = await resizePhoto(file, 1024);
+    const data = await resizePhoto(file, 1600);
     const r = await api("uploadmedia", { token, image: data });
     mediaCache[r.id] = data;               // show instantly without a re-fetch
     await sendFn(MEDIA_PREFIX + r.id);
