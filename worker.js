@@ -225,6 +225,17 @@ async function handleApi(request, env) {
       return json({ ok: true, added: want.length });
     }
 
+    if (action === "kickmember") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can remove members." }, 403);
+      const id = String(body.groupId || "");
+      const target = norm(body.user);
+      if (!target) return json({ error: "No user given." }, 400);
+      if (target === ADMIN_KEY) return json({ error: "Du kannst dich nicht selbst entfernen." }, 400);
+      await DB.prepare("DELETE FROM group_members WHERE gid = ? AND userkey = ?").bind(id, target).run();
+      return json({ ok: true });
+    }
+
     if (action === "groupsend") {
       if (!me) return need();
       const id = String(body.groupId || "");
@@ -432,6 +443,10 @@ async function handleApi(request, env) {
       if (scope === "dm") { const o = norm(body.id); if (o) scopeKey = convId(me.key, o); }
       else if (scope === "group") { if (body.id) scopeKey = String(body.id); }
       if (!scopeKey) return json({ error: "Bad scope." }, 400);
+      if (body.stop) {
+        await DB.prepare("DELETE FROM typing WHERE scope = ? AND userkey = ?").bind(scopeKey, me.key).run();
+        return json({ ok: true });
+      }
       await DB.prepare("INSERT INTO typing (scope, userkey, ts) VALUES (?,?,?) ON CONFLICT(scope, userkey) DO UPDATE SET ts = excluded.ts")
         .bind(scopeKey, me.key, now).run();
       return json({ ok: true });
@@ -519,7 +534,7 @@ async function handleApi(request, env) {
         if (ts) {
           const tr = (await DB.prepare(
             "SELECT u.display FROM typing t JOIN users u ON u.key = t.userkey WHERE t.scope = ? AND t.userkey != ? AND t.ts > ?"
-          ).bind(ts, me.key, now - 5000).all()).results || [];
+          ).bind(ts, me.key, now - 3000).all()).results || [];
           typing = tr.map(r => r.display);
         }
       } catch { typing = []; }

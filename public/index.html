@@ -501,11 +501,22 @@ function markRead(key) {
   lastRead[key] = Date.now() + 5000;
   localStorage.setItem("wc_read_" + myKey, JSON.stringify(lastRead));
 }
+let typingIdleTimer = null;
+function onTypingInput(scope, id) {
+  sendTyping(scope, id);
+  clearTimeout(typingIdleTimer);
+  typingIdleTimer = setTimeout(() => stopTyping(scope, id), 1100);   // ~1s after last keystroke → stop
+}
 function sendTyping(scope, id) {
   const nowMs = Date.now();
-  if (nowMs - lastTypingSent < 2800) return;   // throttle so we don't spam the server
+  if (nowMs - lastTypingSent < 1500) return;   // throttle so we don't spam the server
   lastTypingSent = nowMs;
   api("typing", { token, scope, id }).catch(() => {});
+}
+function stopTyping(scope, id) {
+  clearTimeout(typingIdleTimer);
+  lastTypingSent = 0;   // let typing re-send immediately when they start again
+  api("typing", { token, scope, id, stop: true }).catch(() => {});
 }
 
 /* ---- sidebar ---- */
@@ -737,9 +748,15 @@ function openGroupChat(id, name) {
 function openGroupInfo(groupId) {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
-  const memberRows = (groupMembers || []).map(m =>
-    `<div class="member-row"><div class="avatar" style="width:32px;height:32px;font-size:13px">${initials(m.name)}</div>
-      <span>${escapeHtml(m.name)}</span>${isOnline(presence[m.key]) ? `<span class="online-text" style="font-size:12px;margin-left:auto">online</span>` : ""}</div>`).join("");
+  const memberRows = (groupMembers || []).map(m => {
+    const canKick = isAdmin && m.key !== myKey;
+    return `<div class="member-row"><div class="avatar" style="width:32px;height:32px;font-size:13px">${initials(m.name)}</div>
+      <span>${escapeHtml(m.name)}</span>
+      <span style="margin-left:auto;display:flex;align-items:center;gap:8px">
+        ${isOnline(presence[m.key]) ? `<span class="online-text" style="font-size:12px">online</span>` : ""}
+        ${canKick ? `<button class="btn-delete" data-kick="${escapeHtml(m.key)}" data-name="${escapeHtml(m.name)}" style="padding:3px 10px;font-size:12px">Kick</button>` : ""}
+      </span></div>`;
+  }).join("");
   overlay.innerHTML = `
     <div class="modal-card">
       <h3>${escapeHtml(openChatName || "Group")}</h3>
@@ -753,6 +770,16 @@ function openGroupInfo(groupId) {
     </div>`;
   document.body.appendChild(overlay);
   overlay.querySelector("#grpClose").onclick = () => overlay.remove();
+  overlay.querySelectorAll("[data-kick]").forEach(b => b.onclick = async () => {
+    if (!confirm(`"${b.dataset.name}" aus der Gruppe entfernen?`)) return;
+    try {
+      await api("kickmember", { token, groupId, user: b.dataset.kick });
+      overlay.remove();
+      lastListSig = ""; lastThreadJSON = "";
+      await poll();
+      openGroupInfo(groupId);   // reopen with the updated member list
+    } catch (e) { alert(e.message); }
+  });
   if (isAdmin) {
     overlay.querySelector("#grpAdd").onclick = () => { overlay.remove(); openAddMembers(groupId); };
     overlay.querySelector("#grpDel").onclick = async () => {
@@ -846,12 +873,13 @@ function renderGroupView() {
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
+    stopTyping("group", openChatWith);
     try { await api("groupsend", { token, groupId: openChatWith, text }); await poll(); }
     catch (e) { alert(e.message); input.value = text; }
   };
   $("sendBtn").onclick = send;
   input.onkeydown = e => { if (e.key === "Enter") send(); };
-  input.oninput = () => sendTyping("group", openChatWith);
+  input.oninput = () => onTypingInput("group", openChatWith);
   const back = $("backBtn");
   if (back) back.onclick = () => { openChatWith = null; renderConversation(); renderChatList(); };
   input.focus();
@@ -1316,12 +1344,13 @@ function renderConversation() {
     const text = input.value.trim();
     if (!text) return;
     input.value = "";
+    stopTyping("dm", openChatWith);
     try { await api("send", { token, to: openChatWith, text }); markRead(openChatWith); await poll(); }
     catch (e) { alert(e.message); input.value = text; }
   };
   $("sendBtn").onclick = send;
   input.onkeydown = e => { if (e.key === "Enter") send(); };
-  input.oninput = () => sendTyping("dm", openChatWith);
+  input.oninput = () => onTypingInput("dm", openChatWith);
   const back = $("backBtn");
   if (back) back.onclick = () => { openChatWith = null; renderConversation(); renderChatList(); };
   input.focus();
