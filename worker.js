@@ -320,6 +320,31 @@ async function handleApi(request, env) {
       return json({ count: r ? r.n : 0, bytes: r ? r.bytes : 0 });
     }
 
+    if (action === "stats") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can see stats." }, 403);
+      await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
+      const one = async (sql, ...b) => (await DB.prepare(sql).bind(...b).first()) || {};
+      const users = await one("SELECT COUNT(*) AS n FROM users");
+      const msgs = await one("SELECT COUNT(*) AS n FROM messages");
+      const gmsgs = await one("SELECT COUNT(*) AS n FROM group_messages");
+      const grps = await one("SELECT COUNT(*) AS n FROM groups");
+      const anns = await one("SELECT COUNT(*) AS n FROM announcements");
+      const codes = await one("SELECT COUNT(*) AS n, COUNT(used_by) AS u FROM invites");
+      const online = await one("SELECT COUNT(*) AS n FROM presence WHERE ts > ?", now - 20000);
+      const med = await one("SELECT COUNT(*) AS n, COALESCE(SUM(length(data)), 0) AS bytes FROM media");
+      const top = (await DB.prepare(
+        "SELECT u.display AS name, COUNT(*) AS c FROM messages m JOIN users u ON u.key = m.sender GROUP BY m.sender ORDER BY c DESC LIMIT 5"
+      ).all()).results || [];
+      return json({
+        users: users.n || 0, messages: msgs.n || 0, groupMessages: gmsgs.n || 0,
+        groups: grps.n || 0, announcements: anns.n || 0,
+        codesUsed: codes.u || 0, codesFree: (codes.n || 0) - (codes.u || 0),
+        online: online.n || 0, photos: med.n || 0, bytes: med.bytes || 0,
+        topUsers: top.map(t => ({ name: t.name, count: t.c })),
+      });
+    }
+
     if (action === "clearmedia") {
       if (!me) return need();
       if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can clear photos." }, 403);
@@ -395,6 +420,19 @@ async function handleApi(request, env) {
       else if (scope === "ann") scopeKey = "announce";
       if (!scopeKey) return json({ error: "Bad scope." }, 400);
       await DB.prepare("INSERT INTO reads (scope, userkey, ts) VALUES (?,?,?) ON CONFLICT(scope, userkey) DO UPDATE SET ts = excluded.ts")
+        .bind(scopeKey, me.key, now).run();
+      return json({ ok: true });
+    }
+
+    if (action === "typing") {
+      if (!me) return need();
+      await DB.prepare("CREATE TABLE IF NOT EXISTS typing (scope TEXT, userkey TEXT, ts INTEGER, PRIMARY KEY (scope, userkey))").run();
+      const scope = String(body.scope || "");
+      let scopeKey = null;
+      if (scope === "dm") { const o = norm(body.id); if (o) scopeKey = convId(me.key, o); }
+      else if (scope === "group") { if (body.id) scopeKey = String(body.id); }
+      if (!scopeKey) return json({ error: "Bad scope." }, 400);
+      await DB.prepare("INSERT INTO typing (scope, userkey, ts) VALUES (?,?,?) ON CONFLICT(scope, userkey) DO UPDATE SET ts = excluded.ts")
         .bind(scopeKey, me.key, now).run();
       return json({ ok: true });
     }
@@ -475,9 +513,20 @@ async function handleApi(request, env) {
         annReaders = rr.map(r => ({ key: r.userkey, name: r.display, ts: r.ts }));
       }
 
+      let typing = [];   // who is typing in the open conversation right now
+      try {
+        const ts = chatWith ? convId(me.key, chatWith) : (groupWith && groupMeta ? groupWith : null);
+        if (ts) {
+          const tr = (await DB.prepare(
+            "SELECT u.display FROM typing t JOIN users u ON u.key = t.userkey WHERE t.scope = ? AND t.userkey != ? AND t.ts > ?"
+          ).bind(ts, me.key, now - 5000).all()).results || [];
+          typing = tr.map(r => r.display);
+        }
+      } catch { typing = []; }
+
       return json({
         me: me.key, meName: me.display, partners, messages, announcements, isAdmin: me.key === ADMIN_KEY,
-        groups, groupMessages, groupMeta, presence, reads, annReaders, now,
+        groups, groupMessages, groupMeta, presence, reads, annReaders, typing, now,
       });
     }
 

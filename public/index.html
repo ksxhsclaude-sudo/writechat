@@ -161,7 +161,7 @@
       <div class="search-box"><input id="searchInput" placeholder="Search a friend's username…" autocomplete="off"></div>
       <div class="new-group" id="newGroupWrap" style="display:none"><button id="newGroupBtn">＋ New group</button></div>
       <div class="new-group" id="codePanelWrap" style="display:none;padding-top:0"><button id="codePanelBtn">🎟️ Einladungscodes</button></div>
-      <div class="new-group" id="ownerPanelWrap" style="display:none;padding-top:0"><button id="ownerPanelBtn">⚙️ Owner-Panel</button></div>
+      <div class="new-group" id="ownerPanelWrap" style="display:none;padding-top:0"><button id="ownerPanelBtn">📊 Statistik-Dashboard</button></div>
       <div class="chat-list" id="chatList"></div>
     </div>
     <div class="conversation" id="conversation"></div>
@@ -197,6 +197,7 @@ function previewText(t) {
   return t;
 }
 let presence = {}, readsMap = {}, annReaders = null, serverNow = Date.now(), touchedAt = 0;
+let typingNow = [], lastTypingSent = 0;
 let groupMembers = [];
 let lastListSig = "";   // skip re-drawing the sidebar unless something changed
 
@@ -435,6 +436,7 @@ async function poll() {
     presence = data.presence || {};
     readsMap = data.reads || {};
     annReaders = data.annReaders || null;
+    typingNow = data.typing || [];
     serverNow = data.now || Date.now();
     if (data.me && data.me !== myKey) { myKey = data.me; localStorage.setItem("wc_key", myKey); }
     if (data.meName && data.meName !== myName) {   // owner renamed me → reflect it everywhere
@@ -449,11 +451,21 @@ async function poll() {
     applyAvatar($("myAvatar"), myKey, myName);
     renderChatList();
     if (openChatWith === ANN) renderAnnouncements(announcements);
-    else if (isGroupId(openChatWith)) renderGroup(data.groupMessages || [], data.groupMeta);
+    else if (isGroupId(openChatWith)) {
+      renderGroup(data.groupMessages || [], data.groupMeta);
+      const st = $("grpStatus");
+      if (st && typingNow.length) {
+        st.textContent = typingNow.length === 1 ? `${typingNow[0]} schreibt gerade…` : `${typingNow.join(", ")} schreiben…`;
+        st.classList.add("online-text");
+      }
+    }
     else if (openChatWith) {
       renderThread(data.messages || []);
       const st = $("dmStatus");
-      if (st) { st.textContent = lastActive(presence[openChatWith]); st.classList.toggle("online-text", isOnline(presence[openChatWith])); }
+      if (st) {
+        if (typingNow.length) { st.textContent = "schreibt gerade…"; st.classList.add("online-text"); }
+        else { st.textContent = lastActive(presence[openChatWith]); st.classList.toggle("online-text", isOnline(presence[openChatWith])); }
+      }
     }
     authFails = 0;
   } catch (e) {
@@ -488,6 +500,12 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && to
 function markRead(key) {
   lastRead[key] = Date.now() + 5000;
   localStorage.setItem("wc_read_" + myKey, JSON.stringify(lastRead));
+}
+function sendTyping(scope, id) {
+  const nowMs = Date.now();
+  if (nowMs - lastTypingSent < 2800) return;   // throttle so we don't spam the server
+  lastTypingSent = nowMs;
+  api("typing", { token, scope, id }).catch(() => {});
 }
 
 /* ---- sidebar ---- */
@@ -833,6 +851,7 @@ function renderGroupView() {
   };
   $("sendBtn").onclick = send;
   input.onkeydown = e => { if (e.key === "Enter") send(); };
+  input.oninput = () => sendTyping("group", openChatWith);
   const back = $("backBtn");
   if (back) back.onclick = () => { openChatWith = null; renderConversation(); renderChatList(); };
   input.focus();
@@ -1014,42 +1033,64 @@ async function openCodePanel() {
   };
 }
 
-/* ---- owner panel (stats + media reset) ---- */
+/* ---- statistics dashboard (owner) ---- */
 async function openOwnerPanel() {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   overlay.innerHTML = `
-    <div class="modal-card">
-      <h3>⚙️ Owner-Panel</h3>
+    <div class="modal-card" style="overflow-y:auto">
+      <h3>📊 Statistik-Dashboard</h3>
+      <div id="statGrid" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div class="empty-list" style="grid-column:1/3">Lädt…</div>
+      </div>
       <div style="background:var(--panel2);border-radius:10px;padding:14px">
-        <div style="font-size:13px;color:var(--muted);margin-bottom:6px">Speicher</div>
-        <div id="ownerStats" style="font-size:14px">Lädt…</div>
+        <div id="ownerStats" style="font-size:14px">Speicher lädt…</div>
         <div style="height:8px;background:#0b141a;border-radius:5px;overflow:hidden;margin-top:10px">
           <div id="ownerBar" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
         </div>
       </div>
+      <div style="font-size:13px;color:var(--muted);margin-top:4px">🏆 Aktivste Schreiber</div>
+      <div class="members" id="topUsers" style="max-height:160px"><div class="empty-list">Lädt…</div></div>
       <button class="btn-delete" id="ownerClearBtn" style="width:100%;padding:11px;border:none;border-radius:8px;font-weight:600;cursor:pointer">🗑️ Alle Chat-Fotos löschen (Reset)</button>
-      <div style="font-size:12px;color:var(--muted)">Löscht alle Fotos aus allen Chats & Gruppen. Texte bleiben. Macht den Speicher wieder frei.</div>
       <div class="modal-actions">
+        <button class="btn-cancel" id="ownerRefresh">🔄 Aktualisieren</button>
         <button class="btn-cancel" id="ownerClose">Close</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
   overlay.querySelector("#ownerClose").onclick = () => overlay.remove();
 
+  const grid = overlay.querySelector("#statGrid");
   const statsEl = overlay.querySelector("#ownerStats");
   const barEl = overlay.querySelector("#ownerBar");
+  const topEl = overlay.querySelector("#topUsers");
+  const card = (icon, label, value) => `<div style="background:var(--panel2);border-radius:10px;padding:12px">
+    <div style="font-size:22px;font-weight:700">${value}</div>
+    <div style="font-size:12px;color:var(--muted)">${icon} ${label}</div></div>`;
   async function loadStats() {
     try {
-      const s = await api("mediastats", { token });
+      const s = await api("stats", { token });
+      grid.innerHTML =
+        card("👤", "Nutzer", s.users) +
+        card("🟢", "Jetzt online", s.online) +
+        card("💬", "Nachrichten", s.messages) +
+        card("👥", "Gruppen-Nachr.", s.groupMessages) +
+        card("👥", "Gruppen", s.groups) +
+        card("📢", "Ankündigungen", s.announcements) +
+        card("🎟️", "Codes frei", s.codesFree) +
+        card("✅", "Codes benutzt", s.codesUsed);
       const mb = s.bytes / 1024 / 1024;
       const pct = Math.min(100, (s.bytes / (5 * 1024 * 1024 * 1024)) * 100);
-      statsEl.innerHTML = `📷 <b>${s.count}</b> Fotos insgesamt<br>${mb < 1 ? (s.bytes / 1024).toFixed(0) + " KB" : mb.toFixed(1) + " MB"} von 5 GB belegt (${pct.toFixed(pct < 1 ? 2 : 1)}%)`;
+      statsEl.innerHTML = `📷 <b>${s.photos}</b> Fotos · ${mb < 1 ? (s.bytes / 1024).toFixed(0) + " KB" : mb.toFixed(1) + " MB"} von 5 GB (${pct.toFixed(pct < 1 ? 2 : 1)}%)`;
       barEl.style.width = Math.max(pct, pct > 0 ? 1 : 0) + "%";
       barEl.style.background = pct > 85 ? "#b3261e" : "var(--accent)";
-    } catch (e) { statsEl.textContent = "Statistik nicht verfügbar: " + e.message; }
+      topEl.innerHTML = s.topUsers.length
+        ? s.topUsers.map((t, i) => `<div class="member-row"><span>${["🥇", "🥈", "🥉", "4.", "5."][i] || ""} ${escapeHtml(t.name)}</span><b style="margin-left:auto">${t.count}</b></div>`).join("")
+        : `<div class="empty-list">Noch keine Nachrichten.</div>`;
+    } catch (e) { grid.innerHTML = `<div class="empty-list" style="grid-column:1/3">Statistik nicht verfügbar: ${escapeHtml(e.message)}</div>`; }
   }
   loadStats();
+  overlay.querySelector("#ownerRefresh").onclick = loadStats;
 
   const clearBtn = overlay.querySelector("#ownerClearBtn");
   clearBtn.onclick = async () => {
@@ -1280,6 +1321,7 @@ function renderConversation() {
   };
   $("sendBtn").onclick = send;
   input.onkeydown = e => { if (e.key === "Enter") send(); };
+  input.oninput = () => sendTyping("dm", openChatWith);
   const back = $("backBtn");
   if (back) back.onclick = () => { openChatWith = null; renderConversation(); renderChatList(); };
   input.focus();
