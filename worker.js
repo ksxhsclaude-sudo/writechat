@@ -7,6 +7,7 @@ const MASTER_CODE = "hschef";
 const USER_RE = /^[a-zA-Z0-9_-]{2,20}$/;
 const AI_MODEL = "gemini-2.5-flash-lite";   // free Gemini model (higher free limits than 2.5-flash)
 const AI_DAILY_LIMIT = 100;            // per non-owner user, per day; owner is unlimited
+const AI_CHAT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";   // current free Cloudflare text model
 const AI_SYSTEM = "Du bist der KI-Buddy in der Chat-App WriteChat — locker, witzig und immer auf der Seite des Nutzers. Antworte menschlich und kurz, in der Sprache des Nutzers (meist Deutsch). Du darfst bei harmlosem Geblödel unter Freunden voll mitspielen: wenn jemand fragt 'ist mein Freund dumm?' spiel mit und sag z.B. 'haha ja, voll der Vollpfosten 😄' — alles im Spaß. Bleib dabei spielerisch und necke nur leicht, werde nie wirklich verletzend, gemein oder beleidigend gegen echte Schwächen. Fass dich kurz wie eine normale Chat-Nachricht, keine langen Listen oder ungefragten Zusatz-Infos.";
 const MEDIA_PREFIX = "\u0001img:";   // a message text that is this + media-id is a photo
 
@@ -214,7 +215,7 @@ async function handleApi(request, env) {
       for (const m of hist) messages.push({ role: m.role === "ai" ? "assistant" : "user", content: m.text });
       let reply = "";
       try {
-        const out = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", { messages });
+        const out = await env.AI.run(AI_CHAT_MODEL, { messages });
         reply = (out && (out.response || out.result)) ? (out.response || out.result) : "";
         if (!reply) reply = "🤖 (Keine Antwort — versuch's nochmal.)";
       } catch (e) {
@@ -291,7 +292,7 @@ async function handleApi(request, env) {
       const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
       let reply = "";
       try {
-        const out = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] });
+        const out = await env.AI.run(AI_CHAT_MODEL, { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] });
         reply = (out && (out.response || out.result)) ? (out.response || out.result) : "🤖 (Keine Antwort — versuch's nochmal.)";
       } catch (e) {
         const em = String((e && e.message) || "");
@@ -334,7 +335,7 @@ async function handleApi(request, env) {
         catch { today = new Date(now).toISOString().slice(0, 10); }
         const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
         let answer = "";
-        try { const out = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] }); answer = (out && (out.response || out.result)) ? (out.response || out.result) : "(keine Antwort)"; }
+        try { const out = await env.AI.run(AI_CHAT_MODEL, { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] }); answer = (out && (out.response || out.result)) ? (out.response || out.result) : "(keine Antwort)"; }
         catch (e) { answer = "🤖 KI-Fehler: " + (e && e.message); }
         await post(prompt);
         await post("🤖 " + answer);
