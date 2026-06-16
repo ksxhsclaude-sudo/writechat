@@ -5,6 +5,9 @@ const ADMIN_KEY = "hsadmin";
 const VALID_CODES = [];   // no fixed codes — the owner generates all invite codes in the panel
 const MASTER_CODE = "hschef";
 const USER_RE = /^[a-zA-Z0-9_-]{2,20}$/;
+const AI_MODEL = "gemini-2.0-flash";   // free Gemini model
+const AI_DAILY_LIMIT = 100;            // per non-owner user, per day; owner is unlimited
+const AI_SYSTEM = "Du bist der freundliche KI-Assistent in der Chat-App WriteChat. Antworte hilfsbereit, locker und menschlich, in der Sprache des Nutzers (meist Deutsch). Du darfst quatschen und Fragen beantworten. Halte dich kurz wenn möglich.";
 const MEDIA_PREFIX = "\u0001img:";   // a message text that is this + media-id is a photo
 
 const norm = s => String(s || "").trim().toLowerCase();
@@ -187,6 +190,50 @@ async function handleApi(request, env) {
       return json({ ok: true });
     }
 
+    if (action === "aichat") {
+      if (!me) return need();
+      await DB.prepare("CREATE TABLE IF NOT EXISTS ai_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, userkey TEXT, role TEXT, text TEXT, ts INTEGER)").run();
+      await DB.prepare("CREATE TABLE IF NOT EXISTS ai_usage (userkey TEXT, day TEXT, count INTEGER, PRIMARY KEY (userkey, day))").run();
+      const text = String(body.text || "").trim();
+      if (!text) return json({ error: "Empty message." }, 400);
+      if (text.length > 4000) return json({ error: "Message too long." }, 400);
+      if (!env.GEMINI_KEY) return json({ error: "KI ist noch nicht eingerichtet (kein Schlüssel hinterlegt)." }, 500);
+      const day = new Date(now).toISOString().slice(0, 10);
+      if (me.key !== ADMIN_KEY) {
+        const u = await DB.prepare("SELECT count FROM ai_usage WHERE userkey = ? AND day = ?").bind(me.key, day).first();
+        if ((u ? u.count : 0) >= AI_DAILY_LIMIT) return json({ error: `Dein KI-Tageslimit (${AI_DAILY_LIMIT}) ist erreicht. Morgen geht's weiter 🙂` }, 429);
+      }
+      await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "user", text, now).run();
+      const hist = (await DB.prepare("SELECT role, text FROM ai_messages WHERE userkey = ? ORDER BY id DESC LIMIT 20").bind(me.key).all()).results || [];
+      hist.reverse();
+      const contents = hist.map(m => ({ role: m.role === "ai" ? "model" : "user", parts: [{ text: m.text }] }));
+      let reply = "";
+      try {
+        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent?key=${env.GEMINI_KEY}`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ system_instruction: { parts: [{ text: AI_SYSTEM }] }, contents }),
+        });
+        const data = await r.json();
+        reply = (((data.candidates || [])[0] || {}).content || {}).parts ? data.candidates[0].content.parts.map(p => p.text || "").join("") : "";
+        if (!reply) reply = (data.error && data.error.message) ? ("🤖 KI-Fehler: " + data.error.message) : "🤖 (Keine Antwort — versuch's nochmal.)";
+      } catch (e) {
+        reply = "🤖 Verbindung zur KI fehlgeschlagen: " + (e && e.message);
+      }
+      const replyTs = Date.now();
+      await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", reply, replyTs).run();
+      if (me.key !== ADMIN_KEY) {
+        await DB.prepare("INSERT INTO ai_usage (userkey, day, count) VALUES (?,?,1) ON CONFLICT(userkey, day) DO UPDATE SET count = count + 1").bind(me.key, day).run();
+      }
+      return json({ ok: true, reply, ts: replyTs });
+    }
+
+    if (action === "aiclear") {
+      if (!me) return need();
+      await DB.prepare("CREATE TABLE IF NOT EXISTS ai_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, userkey TEXT, role TEXT, text TEXT, ts INTEGER)").run();
+      await DB.prepare("DELETE FROM ai_messages WHERE userkey = ?").bind(me.key).run();
+      return json({ ok: true });
+    }
+
     if (action === "listusers") {
       if (!me) return need();
       if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can do that." }, 403);
@@ -347,11 +394,20 @@ async function handleApi(request, env) {
       const top = (await DB.prepare(
         "SELECT u.display AS name, COUNT(*) AS c FROM messages m JOIN users u ON u.key = m.sender GROUP BY m.sender ORDER BY c DESC LIMIT 5"
       ).all()).results || [];
+      let aiTotal = 0, aiToday = 0;
+      try {
+        const at = await one("SELECT COUNT(*) AS n FROM ai_messages WHERE role = 'user'");
+        aiTotal = at.n || 0;
+        const day = new Date(now).toISOString().slice(0, 10);
+        const ad = await one("SELECT COALESCE(SUM(count), 0) AS n FROM ai_usage WHERE day = ?", day);
+        aiToday = ad.n || 0;
+      } catch { /* ai tables not created yet */ }
       return json({
         users: users.n || 0, messages: msgs.n || 0, groupMessages: gmsgs.n || 0,
         groups: grps.n || 0, announcements: anns.n || 0,
         codesUsed: codes.u || 0, codesFree: (codes.n || 0) - (codes.u || 0),
         online: online.n || 0, photos: med.n || 0, bytes: med.bytes || 0,
+        aiTotal, aiToday,
         topUsers: top.map(t => ({ name: t.name, count: t.c })),
       });
     }
@@ -528,6 +584,14 @@ async function handleApi(request, env) {
         annReaders = rr.map(r => ({ key: r.userkey, name: r.display, ts: r.ts }));
       }
 
+      let aiMessages = null;
+      if (body.aiOpen) {
+        try {
+          aiMessages = ((await DB.prepare("SELECT role, text, ts FROM ai_messages WHERE userkey = ? ORDER BY id ASC LIMIT 200").bind(me.key).all()).results || [])
+            .map(m => ({ role: m.role, text: m.text, ts: m.ts }));
+        } catch { aiMessages = []; }
+      }
+
       let typing = [];   // who is typing in the open conversation right now
       try {
         const ts = chatWith ? convId(me.key, chatWith) : (groupWith && groupMeta ? groupWith : null);
@@ -541,7 +605,7 @@ async function handleApi(request, env) {
 
       return json({
         me: me.key, meName: me.display, partners, messages, announcements, isAdmin: me.key === ADMIN_KEY,
-        groups, groupMessages, groupMeta, presence, reads, annReaders, typing, now,
+        groups, groupMessages, groupMeta, presence, reads, annReaders, typing, aiMessages, now,
       });
     }
 

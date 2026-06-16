@@ -184,6 +184,8 @@ let groups = {};                // groupId -> {name, ts, last, from}
 let avatarCache = {};           // userKey -> dataURL string, or null if none
 let avatarPending = {};         // userKey -> true while fetching
 const ANN = "@announcements";   // special id for the announcements channel
+const AI_ID = "@ai";            // special id for the AI assistant chat
+let aiMessages = [], aiPending = null;
 const isGroupId = id => typeof id === "string" && id.startsWith("g_");
 const MEDIA_PREFIX = "\u0001img:";   // a message whose text is this + media-id is a photo
 let mediaCache = {};            // mediaId -> dataURL
@@ -423,12 +425,13 @@ $("logoutBtn").onclick = () => {
 async function poll() {
   try {
     let chatWith = "", groupWith = "";
-    if (openChatWith && openChatWith !== ANN) {
+    if (openChatWith && openChatWith !== ANN && openChatWith !== AI_ID) {
       if (isGroupId(openChatWith)) groupWith = openChatWith; else chatWith = openChatWith;
     }
+    const aiOpen = openChatWith === AI_ID;
     const touch = (Date.now() - touchedAt) > 5000;
     if (touch) touchedAt = Date.now();
-    const data = await api("sync", { token, chatWith, groupWith, touch });
+    const data = await api("sync", { token, chatWith, groupWith, aiOpen, touch });
     partners = data.partners || {};
     announcements = data.announcements || [];
     groups = data.groups || {};
@@ -451,6 +454,7 @@ async function poll() {
     applyAvatar($("myAvatar"), myKey, myName);
     renderChatList();
     if (openChatWith === ANN) renderAnnouncements(announcements);
+    else if (openChatWith === AI_ID) { if (data.aiMessages) aiMessages = data.aiMessages; renderAi(aiMessages); }
     else if (isGroupId(openChatWith)) {
       renderGroup(data.groupMessages || [], data.groupMeta);
       const st = $("grpStatus");
@@ -559,6 +563,7 @@ async function renderChatList() {
   lastListSig = sig;
   list.innerHTML = "";
   list.appendChild(announcementItem());   // always pinned at the very top
+  list.appendChild(aiItem());             // AI assistant, pinned right under announcements
   if (!items.length) {
     const e = document.createElement("div");
     e.className = "empty-list";
@@ -708,6 +713,99 @@ async function deleteAnnounce(ts) {
   if (!confirm("Diese Ankündigung löschen?")) return;
   try { await api("deleteannounce", { token, ts }); await poll(); }
   catch (e) { alert(e.message); }
+}
+
+/* ---- AI assistant ---- */
+function aiItem() {
+  const el = document.createElement("div");
+  el.className = "chat-item" + (openChatWith === AI_ID ? " active" : "");
+  el.innerHTML = `
+    <div class="avatar" style="background:#7c3aed">🤖</div>
+    <div class="info">
+      <div class="top"><span class="uname">KI-Assistent</span></div>
+      <div class="top"><span class="preview">Frag mich alles 🙂</span></div>
+    </div>`;
+  el.onclick = openAi;
+  return el;
+}
+function openAi() {
+  openChatWith = AI_ID; openChatName = "KI-Assistent";
+  $("searchInput").value = "";
+  lastThreadJSON = "";
+  renderChatList();
+  renderConversation();
+  poll();
+  $("sidebar").classList.add("hidden");
+  $("conversation").classList.remove("hidden");
+}
+function renderAiView() {
+  const conv = $("conversation");
+  conv.innerHTML = `
+    <div class="conv-header">
+      <button class="back-btn" id="backBtn">←</button>
+      <div class="avatar" style="background:#7c3aed">🤖</div>
+      <div style="flex:1"><div class="uname">KI-Assistent</div><div class="status">Powered by Gemini · für alle gratis</div></div>
+      <button class="logout" id="aiClearBtn" title="Verlauf löschen">🗑️</button>
+    </div>
+    <div class="messages" id="messages"><div style="margin:auto;color:var(--muted);font-size:13px">Lädt…</div></div>
+    <div class="composer">
+      <input id="msgInput" placeholder="Schreib der KI…" autocomplete="off">
+      <button id="sendBtn">➤</button>
+    </div>`;
+  const input = $("msgInput");
+  const send = async () => {
+    const text = input.value.trim();
+    if (!text || aiPending) return;
+    input.value = "";
+    aiPending = text;
+    renderAi(aiMessages);
+    try {
+      await api("aichat", { token, text });
+      aiPending = null;
+      await poll();
+    } catch (e) { aiPending = null; renderAi(aiMessages); alert(e.message); }
+  };
+  $("sendBtn").onclick = send;
+  input.onkeydown = e => { if (e.key === "Enter") send(); };
+  $("aiClearBtn").onclick = async () => {
+    if (!confirm("Deinen KI-Verlauf löschen?")) return;
+    try { await api("aiclear", { token }); aiMessages = []; lastThreadJSON = ""; await poll(); }
+    catch (e) { alert(e.message); }
+  };
+  const back = $("backBtn");
+  if (back) back.onclick = () => { openChatWith = null; renderConversation(); renderChatList(); };
+  input.focus();
+  renderAi(aiMessages);
+}
+function renderAi(list) {
+  const box = $("messages");
+  if (!box) return;
+  const sig = JSON.stringify(list.map(m => [m.ts, m.role, m.text])) + "|p:" + (aiPending || "");
+  if (sig === lastThreadJSON) return;
+  lastThreadJSON = sig;
+  box.innerHTML = "";
+  if (!list.length && !aiPending) {
+    box.innerHTML = `<div style="margin:auto;color:var(--muted);font-size:14px;text-align:center;padding:20px;line-height:1.6">🤖 Hi! Ich bin dein KI-Assistent.<br>Frag mich was, oder lass uns einfach quatschen.</div>`;
+    return;
+  }
+  for (const m of list) {
+    const mine = m.role === "user";
+    const b = document.createElement("div");
+    b.className = "bubble " + (mine ? "me" : "them");
+    b.innerHTML = `${escapeHtml(m.text)}<div class="t">${fmtTime(m.ts)}</div>`;
+    box.appendChild(b);
+  }
+  if (aiPending) {
+    const u = document.createElement("div");
+    u.className = "bubble me";
+    u.innerHTML = `${escapeHtml(aiPending)}<div class="t">…</div>`;
+    box.appendChild(u);
+    const t = document.createElement("div");
+    t.className = "bubble them";
+    t.innerHTML = `<span style="opacity:.7">🤖 tippt…</span>`;
+    box.appendChild(t);
+  }
+  box.scrollTop = box.scrollHeight;
 }
 
 /* ---- groups ---- */
@@ -1106,7 +1204,9 @@ async function openOwnerPanel() {
         card("👥", "Gruppen", s.groups) +
         card("📢", "Ankündigungen", s.announcements) +
         card("🎟️", "Codes frei", s.codesFree) +
-        card("✅", "Codes benutzt", s.codesUsed);
+        card("✅", "Codes benutzt", s.codesUsed) +
+        card("🤖", "KI-Fragen gesamt", s.aiTotal ?? 0) +
+        card("🤖", "KI-Fragen heute", s.aiToday ?? 0);
       const mb = s.bytes / 1024 / 1024;
       const pct = Math.min(100, (s.bytes / (5 * 1024 * 1024 * 1024)) * 100);
       statsEl.innerHTML = `📷 <b>${s.photos}</b> Fotos · ${mb < 1 ? (s.bytes / 1024).toFixed(0) + " KB" : mb.toFixed(1) + " MB"} von 5 GB (${pct.toFixed(pct < 1 ? 2 : 1)}%)`;
@@ -1317,6 +1417,7 @@ function renderConversation() {
     return;
   }
   if (openChatWith === ANN) { renderAnnouncementsView(); return; }
+  if (openChatWith === AI_ID) { renderAiView(); return; }
   if (isGroupId(openChatWith)) { renderGroupView(); return; }
   const display = openChatName || openChatWith;
   conv.innerHTML = `
