@@ -307,6 +307,7 @@ async function handleApi(request, env) {
       if (!env.AI) return json({ error: "KI nicht aktiviert (AI-Bindung fehlt)." }, 500);
       const kind = String(body.kind || "");
       const prompt = String(body.prompt || "").trim();
+      const cmd = String(body.cmd || prompt).trim();
       if (!prompt) return json({ error: "Leer." }, 400);
       const scope = String(body.scope || "");
       const toKey = norm(body.to || "");
@@ -328,6 +329,7 @@ async function handleApi(request, env) {
         await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
         const mid = "m_" + randHex(10);
         await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(mid, "data:image/jpeg;base64," + b64, me.key, now).run();
+        await post(cmd);
         await post(MEDIA_PREFIX + mid);
       } else {
         let today = "";
@@ -337,7 +339,7 @@ async function handleApi(request, env) {
         let answer = "";
         try { const out = await env.AI.run(AI_CHAT_MODEL, { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] }); answer = (out && (out.response || out.result)) ? (out.response || out.result) : "(keine Antwort)"; }
         catch (e) { answer = "🤖 KI-Fehler: " + (e && e.message); }
-        await post(prompt);
+        await post(cmd);
         await post("🤖 " + answer);
       }
       return json({ ok: true });

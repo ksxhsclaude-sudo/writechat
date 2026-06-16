@@ -369,14 +369,14 @@ async function handleSlash(text, scope, extra) {
   const pic = aiPicCommand(text);
   if (pic) {
     if (!isAdmin) { alert("Nur der Owner kann KI-Bilder erstellen."); return true; }
-    try { await api("aipost", { token, kind: "pic", scope, ...extra, prompt: pic }); markRead(openChatWith); await poll(); }
+    try { await api("aipost", { token, kind: "pic", scope, ...extra, prompt: pic, cmd: text }); markRead(openChatWith); await poll(); }
     catch (e) { alert(e.message); }
     return true;
   }
   const ask = aiAskCommand(text);
   if (ask) {
     if (!isAdmin) { alert("Nur der Owner kann /ai benutzen."); return true; }
-    try { await api("aipost", { token, kind: "ai", scope, ...extra, prompt: ask }); markRead(openChatWith); await poll(); }
+    try { await api("aipost", { token, kind: "ai", scope, ...extra, prompt: ask, cmd: text }); markRead(openChatWith); await poll(); }
     catch (e) { alert(e.message); }
     return true;
   }
