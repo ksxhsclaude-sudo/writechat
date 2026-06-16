@@ -12,3 +12,7 @@ binding = "ASSETS"
 binding = "DB"
 database_name = "writechat"
 database_id = "959e2fde-04fd-4fbe-92ef-0cd6ec5fa8b0"
+
+# Cloudflare Workers AI — used for owner-only image generation (free).
+[ai]
+binding = "AI"

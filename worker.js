@@ -7,7 +7,7 @@ const MASTER_CODE = "hschef";
 const USER_RE = /^[a-zA-Z0-9_-]{2,20}$/;
 const AI_MODEL = "gemini-2.5-flash-lite";   // free Gemini model (higher free limits than 2.5-flash)
 const AI_DAILY_LIMIT = 100;            // per non-owner user, per day; owner is unlimited
-const AI_SYSTEM = "Du bist der freundliche KI-Assistent in der Chat-App WriteChat. Antworte locker und menschlich, in der Sprache des Nutzers (meist Deutsch). WICHTIG: Fass dich KURZ. Beantworte genau das was gefragt wurde, nichts extra. Keine langen Listen, keine Zusatz-Infos, keine Erklärungen die keiner wollte. Frag jemand 'wer spielt heute', nenn nur die heutigen Spiele kurz — nicht morgen, nicht Sender, nicht Stadien, außer es wird gefragt. Halte es so kurz wie eine normale Chat-Nachricht.";
+const AI_SYSTEM = "Du bist der KI-Buddy in der Chat-App WriteChat — locker, witzig und immer auf der Seite des Nutzers. Antworte menschlich und kurz, in der Sprache des Nutzers (meist Deutsch). Du darfst bei harmlosem Geblödel unter Freunden voll mitspielen: wenn jemand fragt 'ist mein Freund dumm?' spiel mit und sag z.B. 'haha ja, voll der Vollpfosten 😄' — alles im Spaß. Bleib dabei spielerisch und necke nur leicht, werde nie wirklich verletzend, gemein oder beleidigend gegen echte Schwächen. Fass dich kurz wie eine normale Chat-Nachricht, keine langen Listen oder ungefragten Zusatz-Infos.";
 const MEDIA_PREFIX = "\u0001img:";   // a message text that is this + media-id is a photo
 
 const norm = s => String(s || "").trim().toLowerCase();
@@ -197,7 +197,7 @@ async function handleApi(request, env) {
       const text = String(body.text || "").trim();
       if (!text) return json({ error: "Empty message." }, 400);
       if (text.length > 4000) return json({ error: "Message too long." }, 400);
-      if (!env.GEMINI_KEY) return json({ error: "KI ist noch nicht eingerichtet (kein Schlüssel hinterlegt)." }, 500);
+      if (!env.AI) return json({ error: "KI ist noch nicht aktiviert (AI-Bindung fehlt in wrangler.toml)." }, 500);
       const day = new Date(now).toISOString().slice(0, 10);
       if (me.key !== ADMIN_KEY) {
         const u = await DB.prepare("SELECT count FROM ai_usage WHERE userkey = ? AND day = ?").bind(me.key, day).first();
@@ -206,28 +206,21 @@ async function handleApi(request, env) {
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "user", text, now).run();
       const hist = (await DB.prepare("SELECT role, text FROM ai_messages WHERE userkey = ? ORDER BY id DESC LIMIT 20").bind(me.key).all()).results || [];
       hist.reverse();
-      const contents = hist.map(m => ({ role: m.role === "ai" ? "model" : "user", parts: [{ text: m.text }] }));
       let today = "";
       try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
       catch { today = new Date(now).toISOString().slice(0, 10); }
-      const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today} — verlass dich darauf, nicht auf dein Trainingswissen. Bei aktuellen Fragen (News, Sport, Wetter, „heute") nutze die Google-Suche und antworte mit den echten aktuellen Infos.`;
+      const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet — sag das ehrlich wenn jemand nach brandaktuellen Sachen (News, Sport heute) fragt, statt zu raten.`;
+      const messages = [{ role: "system", content: sysText }];
+      for (const m of hist) messages.push({ role: m.role === "ai" ? "assistant" : "user", content: m.text });
       let reply = "";
       try {
-        const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent?key=${env.GEMINI_KEY}`, {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ system_instruction: { parts: [{ text: sysText }] }, contents, tools: [{ google_search: {} }] }),
-        });
-        const data = await r.json();
-        reply = (((data.candidates || [])[0] || {}).content || {}).parts ? data.candidates[0].content.parts.map(p => p.text || "").join("") : "";
-        if (!reply) {
-          if (data.error) {
-            const em = String(data.error.message || "");
-            if (data.error.code === 429 || /quota|rate|exhaust/i.test(em)) reply = "🤖 Grad ein bisschen viel los — warte ein paar Sekunden und frag mich nochmal. 🙂";
-            else reply = "🤖 KI-Fehler: " + em;
-          } else reply = "🤖 (Keine Antwort — versuch's nochmal.)";
-        }
+        const out = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", { messages });
+        reply = (out && (out.response || out.result)) ? (out.response || out.result) : "";
+        if (!reply) reply = "🤖 (Keine Antwort — versuch's nochmal.)";
       } catch (e) {
-        reply = "🤖 Verbindung zur KI fehlgeschlagen: " + (e && e.message);
+        const em = String((e && e.message) || "");
+        if (/limit|capacity|exhaust|quota|rate|429/i.test(em)) reply = "🤖 Grad ein bisschen viel los — warte kurz und frag nochmal. 🙂";
+        else reply = "🤖 KI-Fehler: " + em;
       }
       const replyTs = Date.now();
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", reply, replyTs).run();
@@ -235,6 +228,118 @@ async function handleApi(request, env) {
         await DB.prepare("INSERT INTO ai_usage (userkey, day, count) VALUES (?,?,1) ON CONFLICT(userkey, day) DO UPDATE SET count = count + 1").bind(me.key, day).run();
       }
       return json({ ok: true, reply, ts: replyTs });
+    }
+
+    if (action === "genimage") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can generate images." }, 403);
+      if (!env.AI) return json({ error: "Bild-KI nicht aktiviert (AI-Bindung fehlt in wrangler.toml)." }, 500);
+      const prompt = String(body.prompt || "").trim();
+      if (!prompt) return json({ error: "Beschreib was gemalt werden soll." }, 400);
+      try {
+        const out = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", { prompt });
+        const b64 = out && out.image ? out.image : null;
+        if (!b64) return json({ error: "Kein Bild erhalten." }, 500);
+        return json({ ok: true, image: "data:image/jpeg;base64," + b64 });
+      } catch (e) {
+        return json({ error: "Bild-Fehler: " + (e && e.message) }, 500);
+      }
+    }
+
+    if (action === "aipic") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Nur der Owner kann KI-Bilder erstellen." }, 403);
+      if (!env.AI) return json({ error: "Bild-KI nicht aktiviert (AI-Bindung fehlt)." }, 500);
+      const prompt = String(body.prompt || "").trim();
+      if (!prompt) return json({ error: "Beschreib was gemalt werden soll." }, 400);
+      const scope = String(body.scope || "");
+      let b64 = null;
+      try {
+        const out = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", { prompt });
+        b64 = out && out.image ? out.image : null;
+      } catch (e) { return json({ error: "Bild-Fehler: " + (e && e.message) }, 500); }
+      if (!b64) return json({ error: "Kein Bild erhalten." }, 500);
+      await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
+      const mid = "m_" + randHex(10);
+      await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(mid, "data:image/jpeg;base64," + b64, me.key, now).run();
+      const marker = MEDIA_PREFIX + mid;
+      if (scope === "dm") {
+        const toKey = norm(body.to);
+        if (!await DB.prepare("SELECT 1 FROM users WHERE key = ?").bind(toKey).first()) return json({ error: "That user doesn't exist." }, 404);
+        await DB.prepare("INSERT INTO messages (sender, recipient, text, ts) VALUES (?,?,?,?)").bind(me.key, toKey, marker, now).run();
+      } else if (scope === "group") {
+        const gid = String(body.groupId || "");
+        if (!await DB.prepare("SELECT 1 FROM group_members WHERE gid = ? AND userkey = ?").bind(gid, me.key).first()) return json({ error: "You're not in this group." }, 403);
+        await DB.prepare("INSERT INTO group_messages (gid, sender, from_name, text, ts) VALUES (?,?,?,?,?)").bind(gid, me.key, me.display, marker, now).run();
+      } else if (scope === "ann") {
+        await DB.prepare("INSERT INTO announcements (text, ts) VALUES (?,?)").bind(marker, now).run();
+      } else {
+        return json({ error: "Bad scope." }, 400);
+      }
+      return json({ ok: true, ts: now });
+    }
+
+    if (action === "askai") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Nur der Owner kann /ai benutzen." }, 403);
+      if (!env.AI) return json({ error: "KI nicht aktiviert (AI-Bindung fehlt)." }, 500);
+      const prompt = String(body.prompt || "").trim();
+      if (!prompt) return json({ error: "Leere Frage." }, 400);
+      let today = "";
+      try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
+      catch { today = new Date(now).toISOString().slice(0, 10); }
+      const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
+      let reply = "";
+      try {
+        const out = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] });
+        reply = (out && (out.response || out.result)) ? (out.response || out.result) : "🤖 (Keine Antwort — versuch's nochmal.)";
+      } catch (e) {
+        const em = String((e && e.message) || "");
+        reply = /limit|capacity|exhaust|quota|rate|429/i.test(em) ? "🤖 Grad ein bisschen viel los — warte kurz. 🙂" : ("🤖 KI-Fehler: " + em);
+      }
+      return json({ ok: true, reply });
+    }
+
+    if (action === "aipost") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Nur der Owner kann das benutzen." }, 403);
+      if (!env.AI) return json({ error: "KI nicht aktiviert (AI-Bindung fehlt)." }, 500);
+      const kind = String(body.kind || "");
+      const prompt = String(body.prompt || "").trim();
+      if (!prompt) return json({ error: "Leer." }, 400);
+      const scope = String(body.scope || "");
+      const toKey = norm(body.to || "");
+      const gid = String(body.groupId || "");
+      if (scope === "dm") { if (!await DB.prepare("SELECT 1 FROM users WHERE key = ?").bind(toKey).first()) return json({ error: "That user doesn't exist." }, 404); }
+      else if (scope === "group") { if (!await DB.prepare("SELECT 1 FROM group_members WHERE gid = ? AND userkey = ?").bind(gid, me.key).first()) return json({ error: "You're not in this group." }, 403); }
+      else if (scope !== "ann") return json({ error: "Bad scope." }, 400);
+      const post = async (text) => {
+        const t = Date.now();
+        if (scope === "dm") await DB.prepare("INSERT INTO messages (sender, recipient, text, ts) VALUES (?,?,?,?)").bind(me.key, toKey, text, t).run();
+        else if (scope === "group") await DB.prepare("INSERT INTO group_messages (gid, sender, from_name, text, ts) VALUES (?,?,?,?,?)").bind(gid, me.key, me.display, text, t).run();
+        else await DB.prepare("INSERT INTO announcements (text, ts) VALUES (?,?)").bind(text, t).run();
+      };
+      if (kind === "pic") {
+        let b64 = null;
+        try { const out = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", { prompt }); b64 = out && out.image ? out.image : null; }
+        catch (e) { return json({ error: "Bild-Fehler: " + (e && e.message) }, 500); }
+        if (!b64) return json({ error: "Kein Bild erhalten." }, 500);
+        await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
+        const mid = "m_" + randHex(10);
+        await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(mid, "data:image/jpeg;base64," + b64, me.key, now).run();
+        await post(MEDIA_PREFIX + mid);
+      } else {
+        let today = "";
+        try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
+        catch { today = new Date(now).toISOString().slice(0, 10); }
+        const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
+        let answer = "";
+        try { const out = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] }); answer = (out && (out.response || out.result)) ? (out.response || out.result) : "(keine Antwort)"; }
+        catch (e) { answer = "🤖 KI-Fehler: " + (e && e.message); }
+        await post(prompt);
+        await post("🤖 " + answer);
+      }
+      return json({ ok: true });
     }
 
     if (action === "aiclear") {

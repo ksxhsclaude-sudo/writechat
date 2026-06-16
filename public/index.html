@@ -162,6 +162,7 @@
       <div class="new-group" id="newGroupWrap" style="display:none"><button id="newGroupBtn">＋ New group</button></div>
       <div class="new-group" id="codePanelWrap" style="display:none;padding-top:0"><button id="codePanelBtn">🎟️ Einladungscodes</button></div>
       <div class="new-group" id="ownerPanelWrap" style="display:none;padding-top:0"><button id="ownerPanelBtn">📊 Statistik-Dashboard</button></div>
+      <div class="new-group" id="imgPanelWrap" style="display:none;padding-top:0"><button id="imgPanelBtn">🎨 Bild erstellen</button></div>
       <div class="chat-list" id="chatList"></div>
     </div>
     <div class="conversation" id="conversation"></div>
@@ -186,6 +187,7 @@ let avatarPending = {};         // userKey -> true while fetching
 const ANN = "@announcements";   // special id for the announcements channel
 const AI_ID = "@ai";            // special id for the AI assistant chat
 let aiMessages = [], aiPending = null;
+let localAi = {};   // scope(openChatWith) -> [{q, a, pending}] private AI answers, only this owner sees them
 const isGroupId = id => typeof id === "string" && id.startsWith("g_");
 const MEDIA_PREFIX = "\u0001img:";   // a message whose text is this + media-id is a photo
 let mediaCache = {};            // mediaId -> dataURL
@@ -352,6 +354,35 @@ async function api(action, extra) {
   return data;
 }
 
+function aiPicCommand(text) {
+  const m = String(text).match(/^\/(?:aipicture|aibild|bild)\s+([\s\S]+)/i);
+  return m ? m[1].trim() : null;
+}
+function aiAskCommand(text) {
+  const m = String(text).match(/^\/ai\s+([\s\S]+)/i);
+  return m ? m[1].trim() : null;
+}
+function isSlash(text) { return !!(aiPicCommand(text) || aiAskCommand(text)); }
+
+// Owner-only slash commands. The result is posted INTO the chat so everyone sees it.
+async function handleSlash(text, scope, extra) {
+  const pic = aiPicCommand(text);
+  if (pic) {
+    if (!isAdmin) { alert("Nur der Owner kann KI-Bilder erstellen."); return true; }
+    try { await api("aipost", { token, kind: "pic", scope, ...extra, prompt: pic }); markRead(openChatWith); await poll(); }
+    catch (e) { alert(e.message); }
+    return true;
+  }
+  const ask = aiAskCommand(text);
+  if (ask) {
+    if (!isAdmin) { alert("Nur der Owner kann /ai benutzen."); return true; }
+    try { await api("aipost", { token, kind: "ai", scope, ...extra, prompt: ask }); markRead(openChatWith); await poll(); }
+    catch (e) { alert(e.message); }
+    return true;
+  }
+  return false;
+}
+
 async function sendPhotoFile(file, sendFn) {
   if (!file) return;
   if (!file.type || !file.type.startsWith("image/")) { alert("Bitte ein Bild auswählen."); return; }
@@ -450,6 +481,7 @@ async function poll() {
     $("newGroupWrap").style.display = isAdmin ? "block" : "none";
     $("codePanelWrap").style.display = isAdmin ? "block" : "none";
     $("ownerPanelWrap").style.display = isAdmin ? "block" : "none";
+    $("imgPanelWrap").style.display = isAdmin ? "block" : "none";
     $("myName").textContent = isAdmin ? myName + " (owner)" : myName;
     applyAvatar($("myAvatar"), myKey, myName);
     renderChatList();
@@ -529,6 +561,7 @@ $("searchInput").oninput = () => { clearTimeout(searchTimer); searchTimer = setT
 $("newGroupBtn").onclick = openGroupModal;
 $("codePanelBtn").onclick = openCodePanel;
 $("ownerPanelBtn").onclick = openOwnerPanel;
+$("imgPanelBtn").onclick = openImagePanel;
 $("meBtn").onclick = openProfileModal;
 
 async function renderChatList() {
@@ -563,6 +596,7 @@ async function renderChatList() {
   lastListSig = sig;
   list.innerHTML = "";
   list.appendChild(announcementItem());   // always pinned at the very top
+  list.appendChild(aiItem());             // AI assistant, pinned right under announcements (everyone)
   if (!items.length) {
     const e = document.createElement("div");
     e.className = "empty-list";
@@ -659,6 +693,7 @@ function renderAnnouncementsView() {
     const send = async () => {
       const text = input.value.trim();
       if (!text) return;
+      if (isSlash(text)) { input.value = ""; await handleSlash(text, "ann", {}); return; }
       input.value = "";
       try { await api("announce", { token, text }); await poll(); }
       catch (e) { alert(e.message); input.value = text; }
@@ -969,6 +1004,7 @@ function renderGroupView() {
   const send = async () => {
     const text = input.value.trim();
     if (!text) return;
+    if (isSlash(text)) { input.value = ""; await handleSlash(text, "group", { groupId: openChatWith }); return; }
     input.value = "";
     stopTyping("group", openChatWith);
     try { await api("groupsend", { token, groupId: openChatWith, text }); await poll(); }
@@ -1156,6 +1192,50 @@ async function openCodePanel() {
       alert(`Code erstellt: ${r.code}\n(schon in die Zwischenablage kopiert)`);
     } catch (e) { alert(e.message); }
   };
+}
+
+/* ---- image generator (owner only) ---- */
+function openImagePanel() {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-card" style="overflow-y:auto">
+      <h3>🎨 Bild erstellen</h3>
+      <div style="font-size:13px;color:var(--muted)">Beschreib was du sehen willst — die KI malt's. (Nur für dich)</div>
+      <div style="display:flex;gap:8px">
+        <input id="imgPrompt" placeholder="z.B. ein Hund als Astronaut auf dem Mond" autocomplete="off">
+        <button class="btn-create" id="imgGen" style="white-space:nowrap">Erstellen</button>
+      </div>
+      <div id="imgResult" style="display:flex;align-items:center;justify-content:center;min-height:60px;color:var(--muted);font-size:13px">Noch kein Bild.</div>
+      <div class="modal-actions">
+        <button class="btn-cancel" id="imgClose">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector("#imgClose").onclick = () => overlay.remove();
+  const promptEl = overlay.querySelector("#imgPrompt");
+  const genBtn = overlay.querySelector("#imgGen");
+  const result = overlay.querySelector("#imgResult");
+  const gen = async () => {
+    const prompt = promptEl.value.trim();
+    if (!prompt) { alert("Beschreib was gemalt werden soll."); return; }
+    genBtn.disabled = true; genBtn.textContent = "Male…";
+    result.innerHTML = `<span style="opacity:.7">🎨 Bild wird erstellt…</span>`;
+    try {
+      const r = await api("genimage", { token, prompt });
+      result.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:8px;align-items:center">
+          <img src="${r.image}" style="max-width:100%;max-height:360px;border-radius:8px">
+          <a href="${r.image}" download="bild.jpg" class="btn-create" style="text-decoration:none;padding:8px 14px;border-radius:8px">⬇️ Speichern</a>
+        </div>`;
+    } catch (e) {
+      result.innerHTML = `<span style="color:#ff6b6b">${escapeHtml(e.message)}</span>`;
+    }
+    genBtn.disabled = false; genBtn.textContent = "Erstellen";
+  };
+  genBtn.onclick = gen;
+  promptEl.onkeydown = e => { if (e.key === "Enter") gen(); };
+  promptEl.focus();
 }
 
 /* ---- statistics dashboard (owner) ---- */
@@ -1443,6 +1523,7 @@ function renderConversation() {
   const send = async () => {
     const text = input.value.trim();
     if (!text) return;
+    if (isSlash(text)) { input.value = ""; await handleSlash(text, "dm", { to: openChatWith }); return; }
     input.value = "";
     stopTyping("dm", openChatWith);
     try { await api("send", { token, to: openChatWith, text }); markRead(openChatWith); await poll(); }
