@@ -71,6 +71,11 @@
     color: rgba(255,255,255,.5); cursor: pointer; opacity: 0; transition: opacity .15s; }
   .bubble:hover .del { opacity: 1; }
   .bubble .del:hover { color: #ff6b6b; }
+  .bubble .edit { position: absolute; top: 2px; right: 22px; font-size: 12px; line-height: 1;
+    color: rgba(255,255,255,.5); cursor: pointer; opacity: 0; transition: opacity .15s; }
+  .bubble:hover .edit { opacity: 1; }
+  .bubble .edit:hover { color: #53bdeb; }
+  @media (hover: none) { .bubble .edit { opacity: .55; } }
   @media (hover: none) { .bubble .del { opacity: .55; } }
   .conv-header .clickable { cursor: pointer; }
   .conv-header .clickable:hover .uname { color: var(--accent2); }
@@ -733,7 +738,9 @@ function renderAnnouncements(list) {
       const seers = (annReaders || []).filter(r => r.key !== myKey && r.ts >= a.ts);
       seenLine = `<div class="seenby">${seers.length ? "👁 Gesehen von: " + seers.map(s => escapeHtml(s.name)).join(", ") : "👁 Noch nicht gesehen"}</div>`;
     }
-    b.innerHTML = `${content}<div class="t">${fmtDateTime(a.ts)}</div>${seenLine}${isAdmin ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    const canEditA = isAdmin && !isImageMsg(a.text);
+    b.innerHTML = `${content}<div class="t">${fmtDateTime(a.ts)}</div>${seenLine}${canEditA ? `<span class="edit" title="Bearbeiten">✎</span>` : ""}${isAdmin ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    if (canEditA) b.querySelector(".edit").onclick = () => editAnnounce(a.ts, a.text);
     if (isAdmin) b.querySelector(".del").onclick = () => deleteAnnounce(a.ts);
     box.appendChild(b);
   }
@@ -746,6 +753,14 @@ function renderAnnouncements(list) {
 async function deleteAnnounce(ts) {
   if (!confirm("Diese Ankündigung löschen?")) return;
   try { await api("deleteannounce", { token, ts }); await poll(); }
+  catch (e) { alert(e.message); }
+}
+async function editAnnounce(ts, oldText) {
+  const t = prompt("Ankündigung bearbeiten:", oldText);
+  if (t === null) return;
+  const text = t.trim();
+  if (!text) return;
+  try { await api("editannounce", { token, ts, text }); lastThreadJSON = ""; await poll(); }
   catch (e) { alert(e.message); }
 }
 
@@ -1062,9 +1077,11 @@ function renderGroup(messages, meta) {
     }
     const img = isImageMsg(m.text);
     const content = img ? mediaImgTag(m.text.slice(MEDIA_PREFIX.length)) : escapeHtml(m.text);
+    const canEdit = isAdmin && !img;
     const b = document.createElement("div");
     b.className = "bubble " + (mine ? "me" : "them") + (img ? " img-bubble" : "");
-    b.innerHTML = `${mine ? "" : `<div class="sender">${escapeHtml(m.fromName || m.from)}</div>`}${content}<div class="t">${fmtDateTime(m.ts)}</div>${seenLine}${canDel ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    b.innerHTML = `${mine ? "" : `<div class="sender">${escapeHtml(m.fromName || m.from)}</div>`}${content}<div class="t">${fmtDateTime(m.ts)}</div>${seenLine}${canEdit ? `<span class="edit" title="Bearbeiten">✎</span>` : ""}${canDel ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    if (canEdit) b.querySelector(".edit").onclick = () => editGroupMsg(m.ts, m.text);
     if (canDel) b.querySelector(".del").onclick = () => deleteGroupMsg(m.ts);
     box.appendChild(b);
   }
@@ -1076,6 +1093,14 @@ function renderGroup(messages, meta) {
 async function deleteGroupMsg(ts) {
   if (!confirm("Delete this message?")) return;
   try { await api("deletegroupmsg", { token, groupId: openChatWith, ts }); await poll(); }
+  catch (e) { alert(e.message); }
+}
+async function editGroupMsg(ts, oldText) {
+  const t = prompt("Nachricht bearbeiten:", oldText);
+  if (t === null) return;
+  const text = t.trim();
+  if (!text) return;
+  try { await api("editgroupmsg", { token, groupId: openChatWith, ts, text }); lastThreadJSON = ""; await poll(); }
   catch (e) { alert(e.message); }
 }
 
@@ -1567,9 +1592,11 @@ function renderThread(msgs) {
     const ticks = mine ? ` <span class="ticks ${seen ? "seen" : ""}">${seen ? "✓✓" : "✓"}</span>` : "";
     const img = isImageMsg(m.text);
     const content = img ? mediaImgTag(m.text.slice(MEDIA_PREFIX.length)) : escapeHtml(m.text);
+    const canEdit = isAdmin && !img;
     const b = document.createElement("div");
     b.className = "bubble " + (mine ? "me" : "them") + (img ? " img-bubble" : "");
-    b.innerHTML = `${content}<div class="t">${fmtDateTime(m.ts)}${ticks}</div>${canDel ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    b.innerHTML = `${content}<div class="t">${fmtDateTime(m.ts)}${ticks}</div>${canEdit ? `<span class="edit" title="Bearbeiten">✎</span>` : ""}${canDel ? `<span class="del" title="Delete">✕</span>` : ""}`;
+    if (canEdit) b.querySelector(".edit").onclick = () => editDM(m.ts, m.text);
     if (canDel) b.querySelector(".del").onclick = () => deleteDM(m.ts);
     box.appendChild(b);
   }
@@ -1582,6 +1609,14 @@ function renderThread(msgs) {
 async function deleteDM(ts) {
   if (!confirm("Delete this message?")) return;
   try { await api("deletemsg", { token, to: openChatWith, ts }); await poll(); }
+  catch (e) { alert(e.message); }
+}
+async function editDM(ts, oldText) {
+  const t = prompt("Nachricht bearbeiten:", oldText);
+  if (t === null) return;
+  const text = t.trim();
+  if (!text) return;
+  try { await api("editmsg", { token, to: openChatWith, ts, text }); lastThreadJSON = ""; await poll(); }
   catch (e) { alert(e.message); }
 }
 

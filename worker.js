@@ -461,6 +461,47 @@ async function handleApi(request, env) {
       return json({ ok: true });
     }
 
+    if (action === "editmsg") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Nur der Owner kann Nachrichten bearbeiten." }, 403);
+      const toKey = norm(body.to);
+      const ts = Number(body.ts);
+      const text = String(body.text || "").trim();
+      if (!text) return json({ error: "Empty message." }, 400);
+      if (text.length > 4000) return json({ error: "Message too long." }, 400);
+      const m = await DB.prepare("SELECT id FROM messages WHERE ts = ? AND ((sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?)) LIMIT 1").bind(ts, me.key, toKey, toKey, me.key).first();
+      if (!m) return json({ error: "Message not found." }, 404);
+      await DB.prepare("UPDATE messages SET text = ? WHERE id = ?").bind(text, m.id).run();
+      return json({ ok: true });
+    }
+
+    if (action === "editgroupmsg") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Nur der Owner kann Nachrichten bearbeiten." }, 403);
+      const gid = String(body.groupId || "");
+      const ts = Number(body.ts);
+      const text = String(body.text || "").trim();
+      if (!text) return json({ error: "Empty message." }, 400);
+      if (text.length > 4000) return json({ error: "Message too long." }, 400);
+      const m = await DB.prepare("SELECT id FROM group_messages WHERE gid = ? AND ts = ? LIMIT 1").bind(gid, ts).first();
+      if (!m) return json({ error: "Message not found." }, 404);
+      await DB.prepare("UPDATE group_messages SET text = ? WHERE id = ?").bind(text, m.id).run();
+      return json({ ok: true });
+    }
+
+    if (action === "editannounce") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can edit announcements." }, 403);
+      const ts = Number(body.ts);
+      const text = String(body.text || "").trim();
+      if (!text) return json({ error: "Empty announcement." }, 400);
+      if (text.length > 4000) return json({ error: "Announcement too long." }, 400);
+      const a = await DB.prepare("SELECT id FROM announcements WHERE ts = ? LIMIT 1").bind(ts).first();
+      if (!a) return json({ error: "Announcement not found." }, 404);
+      await DB.prepare("UPDATE announcements SET text = ? WHERE id = ?").bind(text, a.id).run();
+      return json({ ok: true });
+    }
+
     if (action === "setavatar") {
       if (!me) return need();
       let target = me.key;
