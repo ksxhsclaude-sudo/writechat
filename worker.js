@@ -7,7 +7,7 @@ const MASTER_CODE = "hschef";
 const USER_RE = /^[a-zA-Z0-9_-]{2,20}$/;
 const AI_MODEL = "gemini-2.5-flash";   // free Gemini model
 const AI_DAILY_LIMIT = 100;            // per non-owner user, per day; owner is unlimited
-const AI_SYSTEM = "Du bist der freundliche KI-Assistent in der Chat-App WriteChat. Antworte hilfsbereit, locker und menschlich, in der Sprache des Nutzers (meist Deutsch). Du darfst quatschen und Fragen beantworten. Halte dich kurz wenn möglich.";
+const AI_SYSTEM = "Du bist der freundliche KI-Assistent in der Chat-App WriteChat. Antworte locker und menschlich, in der Sprache des Nutzers (meist Deutsch). WICHTIG: Fass dich KURZ. Beantworte genau das was gefragt wurde, nichts extra. Keine langen Listen, keine Zusatz-Infos, keine Erklärungen die keiner wollte. Frag jemand 'wer spielt heute', nenn nur die heutigen Spiele kurz — nicht morgen, nicht Sender, nicht Stadien, außer es wird gefragt. Halte es so kurz wie eine normale Chat-Nachricht.";
 const MEDIA_PREFIX = "\u0001img:";   // a message text that is this + media-id is a photo
 
 const norm = s => String(s || "").trim().toLowerCase();
@@ -219,7 +219,13 @@ async function handleApi(request, env) {
         });
         const data = await r.json();
         reply = (((data.candidates || [])[0] || {}).content || {}).parts ? data.candidates[0].content.parts.map(p => p.text || "").join("") : "";
-        if (!reply) reply = (data.error && data.error.message) ? ("🤖 KI-Fehler: " + data.error.message) : "🤖 (Keine Antwort — versuch's nochmal.)";
+        if (!reply) {
+          if (data.error) {
+            const em = String(data.error.message || "");
+            if (data.error.code === 429 || /quota|rate|exhaust/i.test(em)) reply = "🤖 Grad ein bisschen viel los — warte ein paar Sekunden und frag mich nochmal. 🙂";
+            else reply = "🤖 KI-Fehler: " + em;
+          } else reply = "🤖 (Keine Antwort — versuch's nochmal.)";
+        }
       } catch (e) {
         reply = "🤖 Verbindung zur KI fehlgeschlagen: " + (e && e.message);
       }
