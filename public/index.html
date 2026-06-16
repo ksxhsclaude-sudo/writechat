@@ -563,7 +563,6 @@ async function renderChatList() {
   lastListSig = sig;
   list.innerHTML = "";
   list.appendChild(announcementItem());   // always pinned at the very top
-  list.appendChild(aiItem());             // AI assistant, pinned right under announcements
   if (!items.length) {
     const e = document.createElement("div");
     e.className = "empty-list";
