@@ -7,7 +7,7 @@ const MASTER_CODE = "hschef";
 const USER_RE = /^[a-zA-Z0-9_-]{2,20}$/;
 const AI_MODEL = "gemini-2.5-flash-lite";   // free Gemini model (higher free limits than 2.5-flash)
 const AI_DAILY_LIMIT = 100;            // per non-owner user, per day; owner is unlimited
-const AI_CHAT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";   // current free Cloudflare text model
+const AI_CHAT_MODEL = "@cf/meta/llama-3.2-3b-instruct";   // small, cheap model → many more answers/day
 const AI_SYSTEM = "Du bist der KI-Buddy in der Chat-App WriteChat — locker, witzig und immer auf der Seite des Nutzers. Antworte menschlich und kurz, in der Sprache des Nutzers (meist Deutsch). Du darfst bei harmlosem Geblödel unter Freunden voll mitspielen: wenn jemand fragt 'ist mein Freund dumm?' spiel mit und sag z.B. 'haha ja, voll der Vollpfosten 😄' — alles im Spaß. Bleib dabei spielerisch und necke nur leicht, werde nie wirklich verletzend, gemein oder beleidigend gegen echte Schwächen. Fass dich kurz wie eine normale Chat-Nachricht, keine langen Listen oder ungefragten Zusatz-Infos.";
 const MEDIA_PREFIX = "\u0001img:";   // a message text that is this + media-id is a photo
 
@@ -340,6 +340,25 @@ async function handleApi(request, env) {
         await post(prompt);
         await post("🤖 " + answer);
       }
+      return json({ ok: true });
+    }
+
+    if (action === "aipicchat") {
+      if (!me) return need();
+      if (me.key !== ADMIN_KEY) return json({ error: "Nur der Owner kann KI-Bilder erstellen." }, 403);
+      if (!env.AI) return json({ error: "Bild-KI nicht aktiviert (AI-Bindung fehlt)." }, 500);
+      const prompt = String(body.prompt || "").trim();
+      if (!prompt) return json({ error: "Beschreib was gemalt werden soll." }, 400);
+      await DB.prepare("CREATE TABLE IF NOT EXISTS ai_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, userkey TEXT, role TEXT, text TEXT, ts INTEGER)").run();
+      let b64 = null;
+      try { const out = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", { prompt }); b64 = out && out.image ? out.image : null; }
+      catch (e) { return json({ error: "Bild-Fehler: " + (e && e.message) }, 500); }
+      if (!b64) return json({ error: "Kein Bild erhalten." }, 500);
+      await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
+      const mid = "m_" + randHex(10);
+      await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(mid, "data:image/jpeg;base64," + b64, me.key, now).run();
+      await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "user", "🎨 " + prompt, now).run();
+      await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", MEDIA_PREFIX + mid, Date.now()).run();
       return json({ ok: true });
     }
 

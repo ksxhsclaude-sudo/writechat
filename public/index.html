@@ -790,6 +790,14 @@ function renderAiView() {
   const send = async () => {
     const text = input.value.trim();
     if (!text || aiPending) return;
+    const pic = aiPicCommand(text);
+    if (pic) {
+      if (!isAdmin) { alert("Nur der Owner kann KI-Bilder erstellen."); return; }
+      input.value = ""; aiPending = "🎨 " + pic; renderAi(aiMessages);
+      try { await api("aipicchat", { token, prompt: pic }); aiPending = null; await poll(); }
+      catch (e) { aiPending = null; renderAi(aiMessages); alert(e.message); }
+      return;
+    }
     input.value = "";
     aiPending = text;
     renderAi(aiMessages);
@@ -824,11 +832,14 @@ function renderAi(list) {
   }
   for (const m of list) {
     const mine = m.role === "user";
+    const img = isImageMsg(m.text);
+    const content = img ? mediaImgTag(m.text.slice(MEDIA_PREFIX.length)) : escapeHtml(m.text);
     const b = document.createElement("div");
-    b.className = "bubble " + (mine ? "me" : "them");
-    b.innerHTML = `${escapeHtml(m.text)}<div class="t">${fmtTime(m.ts)}</div>`;
+    b.className = "bubble " + (mine ? "me" : "them") + (img ? " img-bubble" : "");
+    b.innerHTML = `${content}<div class="t">${fmtTime(m.ts)}</div>`;
     box.appendChild(b);
   }
+  wireChatImages(box);
   if (aiPending) {
     const u = document.createElement("div");
     u.className = "bubble me";
