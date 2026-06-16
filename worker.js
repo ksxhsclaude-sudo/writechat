@@ -207,11 +207,15 @@ async function handleApi(request, env) {
       const hist = (await DB.prepare("SELECT role, text FROM ai_messages WHERE userkey = ? ORDER BY id DESC LIMIT 20").bind(me.key).all()).results || [];
       hist.reverse();
       const contents = hist.map(m => ({ role: m.role === "ai" ? "model" : "user", parts: [{ text: m.text }] }));
+      let today = "";
+      try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
+      catch { today = new Date(now).toISOString().slice(0, 10); }
+      const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today} — verlass dich darauf, nicht auf dein Trainingswissen. Bei aktuellen Fragen (News, Sport, Wetter, „heute") nutze die Google-Suche und antworte mit den echten aktuellen Infos.`;
       let reply = "";
       try {
         const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent?key=${env.GEMINI_KEY}`, {
           method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ system_instruction: { parts: [{ text: AI_SYSTEM }] }, contents }),
+          body: JSON.stringify({ system_instruction: { parts: [{ text: sysText }] }, contents, tools: [{ google_search: {} }] }),
         });
         const data = await r.json();
         reply = (((data.candidates || [])[0] || {}).content || {}).parts ? data.candidates[0].content.parts.map(p => p.text || "").join("") : "";
