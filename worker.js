@@ -40,6 +40,22 @@ async function hashPw(pw, salt) {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+// Free AI via Pollinations — no key, no neuron limit, for text + images.
+async function pollinationsText(messages) {
+  try {
+    const r = await fetch("https://text.pollinations.ai/openai", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+    const txt = await r.text();
+    try { const d = JSON.parse(txt); const c = (((d.choices || [])[0] || {}).message || {}).content; if (c) return String(c); } catch { /* plain text */ }
+    return (txt && txt.trim()) ? txt : "🤖 (Keine Antwort — versuch's nochmal.)";
+  } catch (e) { return "🤖 KI-Fehler: " + (e && e.message); }
+}
+function pollinationsImageUrl(prompt) {
+  return "https://image.pollinations.ai/prompt/" + encodeURIComponent(prompt) + "?width=768&height=768&nologo=true";
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -198,7 +214,6 @@ async function handleApi(request, env) {
       const text = String(body.text || "").trim();
       if (!text) return json({ error: "Empty message." }, 400);
       if (text.length > 4000) return json({ error: "Message too long." }, 400);
-      if (!env.AI) return json({ error: "KI ist noch nicht aktiviert (AI-Bindung fehlt in wrangler.toml)." }, 500);
       const day = new Date(now).toISOString().slice(0, 10);
       if (me.key !== ADMIN_KEY) {
         const u = await DB.prepare("SELECT count FROM ai_usage WHERE userkey = ? AND day = ?").bind(me.key, day).first();
@@ -213,16 +228,7 @@ async function handleApi(request, env) {
       const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet — sag das ehrlich wenn jemand nach brandaktuellen Sachen (News, Sport heute) fragt, statt zu raten.`;
       const messages = [{ role: "system", content: sysText }];
       for (const m of hist) messages.push({ role: m.role === "ai" ? "assistant" : "user", content: m.text });
-      let reply = "";
-      try {
-        const out = await env.AI.run(AI_CHAT_MODEL, { messages });
-        reply = (out && (out.response || out.result)) ? (out.response || out.result) : "";
-        if (!reply) reply = "🤖 (Keine Antwort — versuch's nochmal.)";
-      } catch (e) {
-        const em = String((e && e.message) || "");
-        if (/limit|capacity|exhaust|quota|rate|429/i.test(em)) reply = "🤖 Grad ein bisschen viel los — warte kurz und frag nochmal. 🙂";
-        else reply = "🤖 KI-Fehler: " + em;
-      }
+      const reply = await pollinationsText(messages);
       const replyTs = Date.now();
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", reply, replyTs).run();
       if (me.key !== ADMIN_KEY) {
@@ -234,17 +240,9 @@ async function handleApi(request, env) {
     if (action === "genimage") {
       if (!me) return need();
       if (me.key !== ADMIN_KEY) return json({ error: "Only the owner can generate images." }, 403);
-      if (!env.AI) return json({ error: "Bild-KI nicht aktiviert (AI-Bindung fehlt in wrangler.toml)." }, 500);
       const prompt = String(body.prompt || "").trim();
       if (!prompt) return json({ error: "Beschreib was gemalt werden soll." }, 400);
-      try {
-        const out = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", { prompt });
-        const b64 = out && out.image ? out.image : null;
-        if (!b64) return json({ error: "Kein Bild erhalten." }, 500);
-        return json({ ok: true, image: "data:image/jpeg;base64," + b64 });
-      } catch (e) {
-        return json({ error: "Bild-Fehler: " + (e && e.message) }, 500);
-      }
+      return json({ ok: true, image: pollinationsImageUrl(prompt) });
     }
 
     if (action === "aipic") {
@@ -304,7 +302,6 @@ async function handleApi(request, env) {
     if (action === "aipost") {
       if (!me) return need();
       if (me.key !== ADMIN_KEY) return json({ error: "Nur der Owner kann das benutzen." }, 403);
-      if (!env.AI) return json({ error: "KI nicht aktiviert (AI-Bindung fehlt)." }, 500);
       const kind = String(body.kind || "");
       const prompt = String(body.prompt || "").trim();
       const cmd = String(body.cmd || prompt).trim();
@@ -322,13 +319,9 @@ async function handleApi(request, env) {
         else await DB.prepare("INSERT INTO announcements (text, ts) VALUES (?,?)").bind(text, t).run();
       };
       if (kind === "pic") {
-        let b64 = null;
-        try { const out = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", { prompt }); b64 = out && out.image ? out.image : null; }
-        catch (e) { return json({ error: "Bild-Fehler: " + (e && e.message) }, 500); }
-        if (!b64) return json({ error: "Kein Bild erhalten." }, 500);
         await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
         const mid = "m_" + randHex(10);
-        await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(mid, "data:image/jpeg;base64," + b64, me.key, now).run();
+        await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(mid, pollinationsImageUrl(prompt), me.key, now).run();
         await post(cmd);
         await post(MEDIA_PREFIX + mid);
       } else {
@@ -336,9 +329,7 @@ async function handleApi(request, env) {
         try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
         catch { today = new Date(now).toISOString().slice(0, 10); }
         const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
-        let answer = "";
-        try { const out = await env.AI.run(AI_CHAT_MODEL, { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] }); answer = (out && (out.response || out.result)) ? (out.response || out.result) : "(keine Antwort)"; }
-        catch (e) { answer = "🤖 KI-Fehler: " + (e && e.message); }
+        const answer = await pollinationsText([{ role: "system", content: sysText }, { role: "user", content: prompt }]);
         await post(cmd);
         await post("🤖 " + answer);
       }
@@ -348,17 +339,12 @@ async function handleApi(request, env) {
     if (action === "aipicchat") {
       if (!me) return need();
       if (me.key !== ADMIN_KEY) return json({ error: "Nur der Owner kann KI-Bilder erstellen." }, 403);
-      if (!env.AI) return json({ error: "Bild-KI nicht aktiviert (AI-Bindung fehlt)." }, 500);
       const prompt = String(body.prompt || "").trim();
       if (!prompt) return json({ error: "Beschreib was gemalt werden soll." }, 400);
       await DB.prepare("CREATE TABLE IF NOT EXISTS ai_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, userkey TEXT, role TEXT, text TEXT, ts INTEGER)").run();
-      let b64 = null;
-      try { const out = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", { prompt }); b64 = out && out.image ? out.image : null; }
-      catch (e) { return json({ error: "Bild-Fehler: " + (e && e.message) }, 500); }
-      if (!b64) return json({ error: "Kein Bild erhalten." }, 500);
       await DB.prepare("CREATE TABLE IF NOT EXISTS media (id TEXT PRIMARY KEY, data TEXT, owner TEXT, ts INTEGER)").run();
       const mid = "m_" + randHex(10);
-      await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(mid, "data:image/jpeg;base64," + b64, me.key, now).run();
+      await DB.prepare("INSERT INTO media (id, data, owner, ts) VALUES (?,?,?,?)").bind(mid, pollinationsImageUrl(prompt), me.key, now).run();
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "user", "🎨 " + prompt, now).run();
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", MEDIA_PREFIX + mid, Date.now()).run();
       return json({ ok: true });
