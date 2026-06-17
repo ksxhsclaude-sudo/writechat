@@ -40,20 +40,35 @@ async function hashPw(pw, salt) {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Free AI via Pollinations — no key, no neuron limit, for text + images.
-async function pollinationsText(messages) {
-  try {
-    const r = await fetch("https://text.pollinations.ai/openai", {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ messages }),
-    });
-    const txt = await r.text();
-    try { const d = JSON.parse(txt); const c = (((d.choices || [])[0] || {}).message || {}).content; if (c) return String(c); } catch { /* plain text */ }
-    return (txt && txt.trim()) ? txt : "🤖 (Keine Antwort — versuch's nochmal.)";
-  } catch (e) { return "🤖 KI-Fehler: " + (e && e.message); }
+// Free AI via Pollinations — no key needed (optional free token for higher limits).
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function pollinationsText(messages, env) {
+  const headers = { "content-type": "application/json" };
+  if (env && env.POLLINATIONS_TOKEN) headers["Authorization"] = "Bearer " + env.POLLINATIONS_TOKEN;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch("https://text.pollinations.ai/openai", {
+        method: "POST", headers,
+        body: JSON.stringify({ messages, referrer: "writechat" }),
+      });
+      const txt = await r.text();
+      if (r.status === 429 || (txt && txt.includes('"Queue full"')) || (txt && txt.includes('Queue full'))) {
+        if (attempt < 2) { await sleep(1800); continue; }
+        return "🤖 Grad ein bisschen viel los — warte kurz und frag nochmal. 🙂";
+      }
+      try { const d = JSON.parse(txt); const c = (((d.choices || [])[0] || {}).message || {}).content; if (c) return String(c); } catch { /* plain text */ }
+      if (txt && txt.trim() && !txt.includes('"error"')) return txt;
+      if (attempt < 2) { await sleep(1500); continue; }
+      return "🤖 (Keine Antwort — versuch's nochmal.)";
+    } catch (e) {
+      if (attempt < 2) { await sleep(1500); continue; }
+      return "🤖 KI-Fehler: " + (e && e.message);
+    }
+  }
+  return "🤖 Grad ein bisschen viel los — warte kurz. 🙂";
 }
 function pollinationsImageUrl(prompt) {
-  return "https://image.pollinations.ai/prompt/" + encodeURIComponent(prompt) + "?width=768&height=768&nologo=true";
+  return "https://image.pollinations.ai/prompt/" + encodeURIComponent(prompt) + "?width=768&height=768&nologo=true&referrer=writechat";
 }
 
 export default {
@@ -228,7 +243,7 @@ async function handleApi(request, env) {
       const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet — sag das ehrlich wenn jemand nach brandaktuellen Sachen (News, Sport heute) fragt, statt zu raten.`;
       const messages = [{ role: "system", content: sysText }];
       for (const m of hist) messages.push({ role: m.role === "ai" ? "assistant" : "user", content: m.text });
-      const reply = await pollinationsText(messages);
+      const reply = await pollinationsText(messages, env);
       const replyTs = Date.now();
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", reply, replyTs).run();
       if (me.key !== ADMIN_KEY) {
@@ -329,7 +344,7 @@ async function handleApi(request, env) {
         try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
         catch { today = new Date(now).toISOString().slice(0, 10); }
         const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
-        const answer = await pollinationsText([{ role: "system", content: sysText }, { role: "user", content: prompt }]);
+        const answer = await pollinationsText([{ role: "system", content: sysText }, { role: "user", content: prompt }], env);
         await post(cmd);
         await post("🤖 " + answer);
       }
