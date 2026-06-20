@@ -243,7 +243,14 @@ async function handleApi(request, env) {
       const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet — sag das ehrlich wenn jemand nach brandaktuellen Sachen (News, Sport heute) fragt, statt zu raten.`;
       const messages = [{ role: "system", content: sysText }];
       for (const m of hist) messages.push({ role: m.role === "ai" ? "assistant" : "user", content: m.text });
-      const reply = await pollinationsText(messages, env);
+      let reply = "";
+      try {
+        const out = await env.AI.run(AI_CHAT_MODEL, { messages });
+        reply = (out && (out.response || out.result)) ? (out.response || out.result) : "🤖 (Keine Antwort — versuch's nochmal.)";
+      } catch (e) {
+        const em = String((e && e.message) || "");
+        reply = /neuron|allocation|limit|exhaust|quota|429/i.test(em) ? "🤖 KI-Topf für heute leer — morgen wieder. 🙂" : ("🤖 KI-Fehler: " + em);
+      }
       const replyTs = Date.now();
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", reply, replyTs).run();
       if (me.key !== ADMIN_KEY) {
@@ -344,7 +351,9 @@ async function handleApi(request, env) {
         try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
         catch { today = new Date(now).toISOString().slice(0, 10); }
         const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
-        const answer = await pollinationsText([{ role: "system", content: sysText }, { role: "user", content: prompt }], env);
+        let answer = "";
+        try { const out = await env.AI.run(AI_CHAT_MODEL, { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] }); answer = (out && (out.response || out.result)) ? (out.response || out.result) : "(keine Antwort)"; }
+        catch (e) { answer = "🤖 KI-Fehler: " + (e && e.message); }
         await post(cmd);
         await post("🤖 " + answer);
       }
