@@ -194,8 +194,8 @@ const AI_ID = "@ai";            // special id for the AI assistant chat
 let aiMessages = [], aiPending = null;
 let aiModel = localStorage.getItem("wc_aimodel") || "smart";
 if (aiModel === "auto" || aiModel === "free") aiModel = "smart";
-const AI_MODELS = [["smart", "🧠 Schlau"], ["internet", "🌐 Internet"], ["fast", "⚡ Schnell"]];
-const AI_LABEL = { smart: "🧠 Schlau", internet: "🌐 Internet", fast: "⚡ Schnell" };
+const AI_MODELS = [["smart", "🧠 Llama 70B"], ["internet", "🌐 Gemini"], ["fast", "⚡ Llama 3B"]];
+const AI_LABEL = { smart: "🤖 (Llama 3.3 70B · Cloudflare)", internet: "🌐 (Gemini)", fast: "🤖 (Llama 3.2 3B · Cloudflare)" };
 let localAi = {};   // scope(openChatWith) -> [{q, a, pending}] private AI answers, only this owner sees them
 const isGroupId = id => typeof id === "string" && id.startsWith("g_");
 const MEDIA_PREFIX = "\u0001img:";   // a message whose text is this + media-id is a photo

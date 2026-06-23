@@ -393,9 +393,10 @@ async function handleApi(request, env) {
         try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
         catch { today = new Date(now).toISOString().slice(0, 10); }
         const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
-        const answer = (await aiReply([{ role: "system", content: sysText }, { role: "user", content: prompt }], env, body.model)).reply;
+        const r2 = await aiReply([{ role: "system", content: sysText }, { role: "user", content: prompt }], env, body.model);
+        const nm = { smart: "Llama 70B", fast: "Llama 3B", internet: "Gemini" }[r2.used] || "KI";
         await post(cmd);
-        await post("🤖 " + answer);
+        await post(`🤖 (${nm}) ${r2.reply}`);
       }
       return json({ ok: true });
     }
