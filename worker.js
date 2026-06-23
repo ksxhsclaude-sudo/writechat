@@ -80,8 +80,9 @@ async function tryCfModel(env, model, messages) {
     return (t && String(t).trim()) ? String(t) : null;
   } catch { return null; }
 }
+let lastGeminiError = "";
 async function tryGemini(env, messages) {
-  if (!env || !env.GEMINI_KEY) return null;
+  if (!env || !env.GEMINI_KEY) { lastGeminiError = "kein GEMINI_KEY in Cloudflare hinterlegt"; return null; }
   const sys = messages.find(m => m.role === "system");
   const contents = messages.filter(m => m.role !== "system").map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
   try {
@@ -90,13 +91,16 @@ async function tryGemini(env, messages) {
     const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=" + env.GEMINI_KEY, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
     });
-    if (!r.ok) return null;
-    const d = await r.json();
-    if (d.error) return null;
+    const txt = await r.text();
+    if (!r.ok) { lastGeminiError = "HTTP " + r.status + ": " + txt.slice(0, 160); return null; }
+    let d; try { d = JSON.parse(txt); } catch { lastGeminiError = "ungültige Antwort"; return null; }
+    if (d.error) { lastGeminiError = String(d.error.message || "Fehler").slice(0, 160); return null; }
     const parts = (((d.candidates || [])[0] || {}).content || {}).parts;
     const t = parts ? parts.map(p => p.text || "").join("") : "";
-    return (t && t.trim()) ? t : null;
-  } catch { return null; }
+    if (t && t.trim()) { lastGeminiError = ""; return t; }
+    lastGeminiError = "leere Antwort von Gemini";
+    return null;
+  } catch (e) { lastGeminiError = String((e && e.message) || "Verbindungsfehler"); return null; }
 }
 async function aiReply(messages, env, preferred) {
   const providers = {
@@ -291,7 +295,11 @@ async function handleApi(request, env) {
       const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet — sag das ehrlich wenn jemand nach brandaktuellen Sachen (News, Sport heute) fragt, statt zu raten.`;
       const messages = [{ role: "system", content: sysText }];
       for (const m of hist) messages.push({ role: m.role === "ai" ? "assistant" : "user", content: m.text });
-      const { reply, used } = await aiReply(messages, env, body.model);
+      const ar = await aiReply(messages, env, body.model);
+      let reply = ar.reply; const used = ar.used;
+      if (body.model === "internet" && used !== "internet") {
+        reply = "⚠️ Gemini ging nicht: " + (lastGeminiError || "unbekannt") + "  ·  stattdessen antwortete: " + (used || "keine KI");
+      }
       const replyTs = Date.now();
       const stored = (used ? "§" + used + "§" : "") + reply;
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", stored, replyTs).run();
