@@ -192,8 +192,10 @@ let avatarPending = {};         // userKey -> true while fetching
 const ANN = "@announcements";   // special id for the announcements channel
 const AI_ID = "@ai";            // special id for the AI assistant chat
 let aiMessages = [], aiPending = null;
-let aiModel = localStorage.getItem("wc_aimodel") || "auto";
-const AI_MODELS = [["auto", "🔀 Auto"], ["smart", "🧠 Schlau"], ["internet", "🌐 Internet"], ["fast", "⚡ Schnell"], ["free", "♾️ Frei"]];
+let aiModel = localStorage.getItem("wc_aimodel") || "smart";
+if (aiModel === "auto" || aiModel === "free") aiModel = "smart";
+const AI_MODELS = [["smart", "🧠 Schlau"], ["internet", "🌐 Internet"], ["fast", "⚡ Schnell"]];
+const AI_LABEL = { smart: "🧠 Schlau", internet: "🌐 Internet", fast: "⚡ Schnell" };
 let localAi = {};   // scope(openChatWith) -> [{q, a, pending}] private AI answers, only this owner sees them
 const isGroupId = id => typeof id === "string" && id.startsWith("g_");
 const MEDIA_PREFIX = "\u0001img:";   // a message whose text is this + media-id is a photo
@@ -863,11 +865,17 @@ function renderAi(list) {
   }
   for (const m of list) {
     const mine = m.role === "user";
-    const img = isImageMsg(m.text);
-    const content = img ? mediaImgTag(m.text.slice(MEDIA_PREFIX.length)) : escapeHtml(m.text);
+    let text = m.text, via = "";
+    if (!mine && typeof text === "string") {
+      const mt = text.match(/^§(\w+)§([\s\S]*)/);
+      if (mt) { via = mt[1]; text = mt[2]; }
+    }
+    const img = isImageMsg(text);
+    const content = img ? mediaImgTag(text.slice(MEDIA_PREFIX.length)) : escapeHtml(text);
     const b = document.createElement("div");
     b.className = "bubble " + (mine ? "me" : "them") + (img ? " img-bubble" : "");
-    b.innerHTML = `${content}<div class="t">${fmtTime(m.ts)}</div>`;
+    const label = via ? `<div class="sender" style="color:#a78bfa">${AI_LABEL[via] || via}</div>` : "";
+    b.innerHTML = `${label}${content}<div class="t">${fmtTime(m.ts)}</div>`;
     box.appendChild(b);
   }
   wireChatImages(box);

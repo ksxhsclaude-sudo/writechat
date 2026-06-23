@@ -103,9 +103,8 @@ async function aiReply(messages, env, preferred) {
     smart: () => tryCfModel(env, "@cf/meta/llama-3.3-70b-instruct-fp8-fast", messages),
     fast: () => tryCfModel(env, "@cf/meta/llama-3.2-3b-instruct", messages),
     internet: () => tryGemini(env, messages),
-    free: () => pollinationsText(messages, env),
   };
-  let order = ["smart", "internet", "fast", "free"];
+  let order = ["smart", "internet", "fast"];
   if (preferred && providers[preferred]) order = [preferred, ...order.filter(k => k !== preferred)];
   let soft = "";
   for (const key of order) {
@@ -292,9 +291,10 @@ async function handleApi(request, env) {
       const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet — sag das ehrlich wenn jemand nach brandaktuellen Sachen (News, Sport heute) fragt, statt zu raten.`;
       const messages = [{ role: "system", content: sysText }];
       for (const m of hist) messages.push({ role: m.role === "ai" ? "assistant" : "user", content: m.text });
-      const { reply } = await aiReply(messages, env, body.model);
+      const { reply, used } = await aiReply(messages, env, body.model);
       const replyTs = Date.now();
-      await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", reply, replyTs).run();
+      const stored = (used ? "§" + used + "§" : "") + reply;
+      await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", stored, replyTs).run();
       if (me.key !== ADMIN_KEY) {
         await DB.prepare("INSERT INTO ai_usage (userkey, day, count) VALUES (?,?,1) ON CONFLICT(userkey, day) DO UPDATE SET count = count + 1").bind(me.key, day).run();
       }
