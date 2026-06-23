@@ -318,10 +318,7 @@ async function handleApi(request, env) {
         }
       }
       const ar = await aiReply(messages, env, body.model);
-      let reply = ar.reply; const used = ar.used;
-      if (body.model === "internet" && used !== "internet") {
-        reply = "⚠️ Gemini ging nicht: " + (lastGeminiError || "unbekannt") + "  ·  stattdessen antwortete: " + (used || "keine KI");
-      }
+      const reply = ar.reply, used = ar.used;
       const replyTs = Date.now();
       const stored = (used ? "§" + used + "§" : "") + reply;
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", stored, replyTs).run();
@@ -422,7 +419,19 @@ async function handleApi(request, env) {
         let today = "";
         try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
         catch { today = new Date(now).toISOString().slice(0, 10); }
-        const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Wenn nach Aktuellem gefragt wird (News, Sport, Wetter), nutze deine Internet-Suche und gib echte aktuelle Infos — sag NICHT dass du keinen Zugriff hast.`;
+        let ctx = "";
+        try {
+          if (scope === "dm") {
+            const convo = ((await DB.prepare("SELECT sender, text FROM messages WHERE (sender = ?1 AND recipient = ?2) OR (sender = ?2 AND recipient = ?1) ORDER BY ts DESC LIMIT 15").bind(me.key, toKey).all()).results || []).reverse();
+            const ou = await DB.prepare("SELECT display FROM users WHERE key = ?").bind(toKey).first();
+            const other = ou ? ou.display : toKey;
+            ctx = convo.map(m => (m.sender === me.key ? me.display : other) + ": " + (String(m.text).startsWith(MEDIA_PREFIX) ? "[Bild]" : m.text)).join("\n");
+          } else if (scope === "group") {
+            const convo = ((await DB.prepare("SELECT from_name, sender, text FROM group_messages WHERE gid = ? ORDER BY ts DESC LIMIT 15").bind(gid).all()).results || []).reverse();
+            ctx = convo.map(m => (m.from_name || m.sender) + ": " + (String(m.text).startsWith(MEDIA_PREFIX) ? "[Bild]" : m.text)).join("\n");
+          }
+        } catch { ctx = ""; }
+        const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Wenn nach Aktuellem gefragt wird (News, Sport, Wetter), nutze deine Internet-Suche und gib echte aktuelle Infos — sag NICHT dass du keinen Zugriff hast.` + (ctx ? `\n\nHier der bisherige Chat-Verlauf in diesem Chat (damit du weißt worüber geredet wird, beziehe dich darauf):\n${ctx}` : "");
         const r2 = await aiReply([{ role: "system", content: sysText }, { role: "user", content: prompt }], env, body.model);
         const nm = { smart: "Llama 70B", fast: "Llama 3B", internet: "Gemini" }[r2.used] || "KI";
         await post(cmd);

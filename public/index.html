@@ -385,7 +385,7 @@ async function handleSlash(text, scope, extra) {
   const ask = aiAskCommand(text);
   if (ask) {
     if (!isAdmin) { alert("Nur der Owner kann /ai benutzen."); return true; }
-    try { await api("aipost", { token, kind: "ai", scope, ...extra, prompt: ask, cmd: text }); markRead(openChatWith); await poll(); }
+    try { await api("aipost", { token, kind: "ai", scope, ...extra, prompt: ask, cmd: text, model: aiModel }); markRead(openChatWith); await poll(); }
     catch (e) { alert(e.message); }
     return true;
   }
