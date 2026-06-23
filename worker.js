@@ -71,6 +71,55 @@ function pollinationsImageUrl(prompt) {
   return "https://image.pollinations.ai/prompt/" + encodeURIComponent(prompt) + "?width=768&height=768&nologo=true&referrer=writechat";
 }
 
+// ---- Multi-AI with auto-fallback: tries providers in order until one answers ----
+async function tryCfModel(env, model, messages) {
+  if (!env || !env.AI) return null;
+  try {
+    const out = await env.AI.run(model, { messages });
+    const t = out && (out.response || out.result);
+    return (t && String(t).trim()) ? String(t) : null;
+  } catch { return null; }
+}
+async function tryGemini(env, messages) {
+  if (!env || !env.GEMINI_KEY) return null;
+  const sys = messages.find(m => m.role === "system");
+  const contents = messages.filter(m => m.role !== "system").map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
+  try {
+    const body = { contents, tools: [{ google_search: {} }] };
+    if (sys) body.system_instruction = { parts: [{ text: sys.content }] };
+    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=" + env.GEMINI_KEY, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d.error) return null;
+    const parts = (((d.candidates || [])[0] || {}).content || {}).parts;
+    const t = parts ? parts.map(p => p.text || "").join("") : "";
+    return (t && t.trim()) ? t : null;
+  } catch { return null; }
+}
+async function aiReply(messages, env, preferred) {
+  const providers = {
+    smart: () => tryCfModel(env, "@cf/meta/llama-3.3-70b-instruct-fp8-fast", messages),
+    fast: () => tryCfModel(env, "@cf/meta/llama-3.2-3b-instruct", messages),
+    internet: () => tryGemini(env, messages),
+    free: () => pollinationsText(messages, env),
+  };
+  let order = ["smart", "internet", "fast", "free"];
+  if (preferred && providers[preferred]) order = [preferred, ...order.filter(k => k !== preferred)];
+  let soft = "";
+  for (const key of order) {
+    const res = await providers[key]();   // null = provider unavailable/limited → try next
+    if (res && String(res).trim()) {
+      const r = String(res);
+      const bad = r.startsWith("🤖 Grad ein bisschen") || r.startsWith("🤖 KI-Fehler") || r.startsWith("🤖 (Keine");
+      if (!bad) return { reply: r, used: key };
+      soft = r;
+    }
+  }
+  return { reply: soft || "🤖 Grad sind alle KIs beschäftigt — gleich nochmal. 🙂", used: null };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -243,14 +292,7 @@ async function handleApi(request, env) {
       const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet — sag das ehrlich wenn jemand nach brandaktuellen Sachen (News, Sport heute) fragt, statt zu raten.`;
       const messages = [{ role: "system", content: sysText }];
       for (const m of hist) messages.push({ role: m.role === "ai" ? "assistant" : "user", content: m.text });
-      let reply = "";
-      try {
-        const out = await env.AI.run(AI_CHAT_MODEL, { messages });
-        reply = (out && (out.response || out.result)) ? (out.response || out.result) : "🤖 (Keine Antwort — versuch's nochmal.)";
-      } catch (e) {
-        const em = String((e && e.message) || "");
-        reply = /neuron|allocation|limit|exhaust|quota|429/i.test(em) ? "🤖 KI-Topf für heute leer — morgen wieder. 🙂" : ("🤖 KI-Fehler: " + em);
-      }
+      const { reply } = await aiReply(messages, env, body.model);
       const replyTs = Date.now();
       await DB.prepare("INSERT INTO ai_messages (userkey, role, text, ts) VALUES (?,?,?,?)").bind(me.key, "ai", reply, replyTs).run();
       if (me.key !== ADMIN_KEY) {
@@ -351,9 +393,7 @@ async function handleApi(request, env) {
         try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
         catch { today = new Date(now).toISOString().slice(0, 10); }
         const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
-        let answer = "";
-        try { const out = await env.AI.run(AI_CHAT_MODEL, { messages: [{ role: "system", content: sysText }, { role: "user", content: prompt }] }); answer = (out && (out.response || out.result)) ? (out.response || out.result) : "(keine Antwort)"; }
-        catch (e) { answer = "🤖 KI-Fehler: " + (e && e.message); }
+        const answer = (await aiReply([{ role: "system", content: sysText }, { role: "user", content: prompt }], env, body.model)).reply;
         await post(cmd);
         await post("🤖 " + answer);
       }

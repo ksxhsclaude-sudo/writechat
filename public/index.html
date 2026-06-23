@@ -192,6 +192,8 @@ let avatarPending = {};         // userKey -> true while fetching
 const ANN = "@announcements";   // special id for the announcements channel
 const AI_ID = "@ai";            // special id for the AI assistant chat
 let aiMessages = [], aiPending = null;
+let aiModel = localStorage.getItem("wc_aimodel") || "auto";
+const AI_MODELS = [["auto", "🔀 Auto"], ["smart", "🧠 Schlau"], ["internet", "🌐 Internet"], ["fast", "⚡ Schnell"], ["free", "♾️ Frei"]];
 let localAi = {};   // scope(openChatWith) -> [{q, a, pending}] private AI answers, only this owner sees them
 const isGroupId = id => typeof id === "string" && id.startsWith("g_");
 const MEDIA_PREFIX = "\u0001img:";   // a message whose text is this + media-id is a photo
@@ -796,6 +798,7 @@ function renderAiView() {
       <div style="flex:1"><div class="uname">KI-Assistent</div><div class="status">Dein KI-Buddy · für alle gratis</div></div>
       <button class="logout" id="aiClearBtn" title="Verlauf löschen">🗑️</button>
     </div>
+    <div id="aiPicker" style="display:flex;gap:6px;padding:7px 12px;background:var(--panel2);overflow-x:auto;border-top:1px solid #182229"></div>
     <div class="messages" id="messages"><div style="margin:auto;color:var(--muted);font-size:13px">Lädt…</div></div>
     <div class="composer">
       <input id="msgInput" placeholder="Schreib der KI…" autocomplete="off">
@@ -817,7 +820,7 @@ function renderAiView() {
     aiPending = text;
     renderAi(aiMessages);
     try {
-      await api("aichat", { token, text });
+      await api("aichat", { token, text, model: aiModel === "auto" ? "" : aiModel });
       aiPending = null;
       await poll();
     } catch (e) { aiPending = null; renderAi(aiMessages); alert(e.message); }
@@ -831,8 +834,21 @@ function renderAiView() {
   };
   const back = $("backBtn");
   if (back) back.onclick = () => { openChatWith = null; renderConversation(); renderChatList(); };
+  renderAiPicker();
   input.focus();
   renderAi(aiMessages);
+}
+function renderAiPicker() {
+  const bar = $("aiPicker");
+  if (!bar) return;
+  bar.innerHTML = "";
+  for (const [val, label] of AI_MODELS) {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.style.cssText = "padding:5px 11px;border-radius:14px;border:none;cursor:pointer;font-size:12px;white-space:nowrap;flex-shrink:0;" + (aiModel === val ? "background:var(--accent);color:#fff;font-weight:600" : "background:#2a3942;color:var(--text)");
+    b.onclick = () => { aiModel = val; localStorage.setItem("wc_aimodel", val); renderAiPicker(); };
+    bar.appendChild(b);
+  }
 }
 function renderAi(list) {
   const box = $("messages");
