@@ -85,22 +85,33 @@ async function tryGemini(env, messages) {
   if (!env || !env.GEMINI_KEY) { lastGeminiError = "kein GEMINI_KEY in Cloudflare hinterlegt"; return null; }
   const sys = messages.find(m => m.role === "system");
   const contents = messages.filter(m => m.role !== "system").map(m => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] }));
-  try {
-    const body = { contents, tools: [{ google_search: {} }] };
-    if (sys) body.system_instruction = { parts: [{ text: sys.content }] };
-    const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=" + env.GEMINI_KEY, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-    });
-    const txt = await r.text();
-    if (!r.ok) { lastGeminiError = "HTTP " + r.status + ": " + txt.slice(0, 160); return null; }
-    let d; try { d = JSON.parse(txt); } catch { lastGeminiError = "ungültige Antwort"; return null; }
-    if (d.error) { lastGeminiError = String(d.error.message || "Fehler").slice(0, 160); return null; }
-    const parts = (((d.candidates || [])[0] || {}).content || {}).parts;
-    const t = parts ? parts.map(p => p.text || "").join("") : "";
-    if (t && t.trim()) { lastGeminiError = ""; return t; }
-    lastGeminiError = "leere Antwort von Gemini";
-    return null;
-  } catch (e) { lastGeminiError = String((e && e.message) || "Verbindungsfehler"); return null; }
+  const body = { contents, tools: [{ google_search: {} }] };
+  if (sys) body.system_instruction = { parts: [{ text: sys.content }] };
+  const models = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"];
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const model = models[Math.min(attempt, models.length - 1)];
+    try {
+      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + env.GEMINI_KEY, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      const txt = await r.text();
+      if (r.status === 503 || r.status === 429 || r.status === 500) { lastGeminiError = "HTTP " + r.status + " (überlastet)"; await sleep(1200); continue; }
+      if (!r.ok) { lastGeminiError = "HTTP " + r.status + ": " + txt.slice(0, 140); return null; }
+      let d; try { d = JSON.parse(txt); } catch { lastGeminiError = "ungültige Antwort"; return null; }
+      if (d.error) {
+        const em = String(d.error.message || "Fehler");
+        lastGeminiError = em.slice(0, 140);
+        if (/503|overload|unavailable|high demand|429|quota|rate/i.test(em)) { await sleep(1200); continue; }
+        return null;
+      }
+      const parts = (((d.candidates || [])[0] || {}).content || {}).parts;
+      const t = parts ? parts.map(p => p.text || "").join("") : "";
+      if (t && t.trim()) { lastGeminiError = ""; return t; }
+      lastGeminiError = "leere Antwort von Gemini";
+      return null;
+    } catch (e) { lastGeminiError = String((e && e.message) || "Verbindungsfehler"); await sleep(1000); }
+  }
+  return null;
 }
 async function aiReply(messages, env, preferred) {
   const providers = {
