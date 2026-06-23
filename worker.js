@@ -303,9 +303,20 @@ async function handleApi(request, env) {
       let today = "";
       try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
       catch { today = new Date(now).toISOString().slice(0, 10); }
-      const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet — sag das ehrlich wenn jemand nach brandaktuellen Sachen (News, Sport heute) fragt, statt zu raten.`;
+      const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Wenn jemand nach aktuellen Dingen fragt (News, Sport, Wetter, "wer spielt heute"), nutze deine Internet-Suche und gib echte aktuelle Infos — sag NICHT dass du keinen Zugriff hast. WICHTIG: In diesem Chat antworten MEHRERE KIs zusammen (Gemini, Llama 70B, Llama 3B). Frühere Antworten sind mit [Name] markiert, damit du siehst welche KI was gesagt hat — du darfst dich auf die anderen KIs beziehen und mit ihnen interagieren ("Gemini hat recht..." usw.). Setze deine EIGENE Antwort aber NICHT selbst in [Klammern].`;
+      const NAMES = { smart: "Llama 70B", fast: "Llama 3B", internet: "Gemini" };
       const messages = [{ role: "system", content: sysText }];
-      for (const m of hist) messages.push({ role: m.role === "ai" ? "assistant" : "user", content: m.text });
+      for (const m of hist) {
+        if (m.role === "ai") {
+          let t = String(m.text), nm = "KI";
+          const mt = t.match(/^§(\w+)§([\s\S]*)/);
+          if (mt) { nm = NAMES[mt[1]] || "KI"; t = mt[2]; }
+          if (t.startsWith(MEDIA_PREFIX)) t = "[Bild]";
+          messages.push({ role: "assistant", content: "[" + nm + "] " + t });
+        } else {
+          messages.push({ role: "user", content: String(m.text) });
+        }
+      }
       const ar = await aiReply(messages, env, body.model);
       let reply = ar.reply; const used = ar.used;
       if (body.model === "internet" && used !== "internet") {
@@ -411,7 +422,7 @@ async function handleApi(request, env) {
         let today = "";
         try { today = new Date(now).toLocaleDateString("de-DE", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Europe/Berlin" }); }
         catch { today = new Date(now).toISOString().slice(0, 10); }
-        const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Du hast kein Internet.`;
+        const sysText = AI_SYSTEM + ` Das echte aktuelle Datum ist ${today}. Wenn nach Aktuellem gefragt wird (News, Sport, Wetter), nutze deine Internet-Suche und gib echte aktuelle Infos — sag NICHT dass du keinen Zugriff hast.`;
         const r2 = await aiReply([{ role: "system", content: sysText }, { role: "user", content: prompt }], env, body.model);
         const nm = { smart: "Llama 70B", fast: "Llama 3B", internet: "Gemini" }[r2.used] || "KI";
         await post(cmd);
